@@ -49,9 +49,11 @@
 
         #yt-player {
             position: absolute;
-            width: 1px;
-            height: 1px;
-            opacity: 0;
+            width: 200px;
+            height: 200px;
+            left: 0;
+            top: 0;
+            opacity: 0.01;
             pointer-events: none;
             z-index: -1;
         }
@@ -302,7 +304,7 @@
 
         function onYouTubeIframeAPIReady() {
             player = new YT.Player('yt-player', {
-                height: '1', width: '1', videoId: '',
+                height: '200', width: '200', videoId: '',
                 playerVars: { autoplay: 0, controls: 0, modestbranding: 1, playsinline: 1 },
                 events: { onReady: onPlayerReady, onStateChange: onPlayerStateChange }
             });

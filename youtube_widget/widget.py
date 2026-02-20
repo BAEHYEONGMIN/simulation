@@ -15,6 +15,9 @@ from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings, QWebEngineProfile
 from PyQt6.QtCore import Qt, QUrl, QPoint, QPropertyAnimation
 from PyQt6.QtGui import QColor, QIcon, QPixmap
+import threading
+import http.server
+import socketserver
 
 
 def make_icon(color="#a78bfa", size=16):
@@ -121,9 +124,10 @@ class TitleBar(QWidget):
 
 
 class YouTubeWidget(QMainWindow):
-    def __init__(self, app: QApplication):
+    def __init__(self, app: QApplication, server_port: int):
         super().__init__()
         self.app = app
+        self.server_port = server_port
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
@@ -166,8 +170,8 @@ class YouTubeWidget(QMainWindow):
         settings.setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
         settings.setAttribute(QWebEngineSettings.WebAttribute.AllowRunningInsecureContent, True)
 
-        html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "player.html")
-        self.view.load(QUrl.fromLocalFile(html_path))
+        # 로컬 서버에서 호스팅된 URL로 로드 (동적 포트 할당)
+        self.view.load(QUrl(f"http://localhost:{self.server_port}/player.html"))
         vbox.addWidget(self.view)
 
         # ─── 시스템 트레이 ────────────────────────────────────────
@@ -269,12 +273,47 @@ class YouTubeWidget(QMainWindow):
         self.hide()
 
 
+class LocalHTTPServer:
+    """widget.py 실행 시 내부적으로만 돌아가는 백그라운드 웹 서버. 
+    YouTube IFrame 정책 우회를 위함"""
+    def __init__(self, port=0):
+        self.port = port
+        self.server = None
+        self.thread = None
+
+    def start(self):
+        # 현재 파일이 있는 디렉토리를 루트로 설정
+        os.chdir(os.path.dirname(os.path.abspath(__file__)))
+        
+        try:
+            Handler = http.server.SimpleHTTPRequestHandler
+            # 로그 출력 끄기
+            class QuietHandler(Handler):
+                def log_message(self, format, *args):
+                    pass
+                    
+            self.server = socketserver.TCPServer(("", self.port), QuietHandler)
+            self.port = self.server.server_address[1] # OS가 할당한 실제 동적 포트 번호 저장
+            self.thread = threading.Thread(target=self.server.serve_forever)
+            self.thread.daemon = True # 메인 프로그램 종료 시 같이 죽음
+            self.thread.start()
+        except OSError:
+            pass 
+
+
 if __name__ == "__main__":
+    # 내장 로컬 웹 서버 시작 (포트 0 = 남는 포트 자동 할당)
+    local_server = LocalHTTPServer(port=0)
+    local_server.start()
+
+    # WebEngine 미디어 자동재생 & 오디오 제약 해제
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--autoplay-policy=no-user-gesture-required --disable-features=HardwareMediaKeyHandling"
+
     app = QApplication(sys.argv)
     app.setApplicationName("YouTube Widget")
     app.setQuitOnLastWindowClosed(False)  # 창 닫아도 앱 유지 (트레이 남음)
 
-    window = YouTubeWidget(app)
+    window = YouTubeWidget(app, local_server.port)
     window.show()
 
     sys.exit(app.exec())
