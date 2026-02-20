@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Taskbar Player</title>
+    <!-- YouTube IFrame API -->
+    <script src="https://www.youtube.com/iframe_api"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap');
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            background: transparent;
+            font-family: 'Inter', sans-serif;
+            color: #fff;
+        }
+
+        /* 유튜브 백그라운드 오디오 유지용 (안 보이지만 존재함) */
+        #yt-player {
+            position: absolute;
+            width: 200px;
+            height: 200px;
+            left: 0;
+            top: 0;
+            opacity: 0.01;
+            pointer-events: none;
+            z-index: -1;
+        }
+
+        /* 전체를 감싸서 아래로 정렬 */
+        .container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            /* 아래에 정렬 */
+        }
+
+        /* 마우스를 올렸을 때 위로 늘어나는 패널 (URL입력, 볼륨) */
+        .expanded-panel {
+            background: rgba(15, 15, 20, 0.4);
+            /* 투명도 0.9 -> 0.4 대폭 증가 */
+            backdrop-filter: blur(15px);
+            /* 블러 약간 낮춤 */
+            -webkit-backdrop-filter: blur(15px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-left: none;
+            border-bottom: none;
+            border-radius: 0 12px 0 0;
+            padding: 15px 20px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-evenly;
+
+            /* 높이가 줄어들 때 내용물이 안 보이도록 */
+            flex-grow: 1;
+            overflow: hidden;
+            opacity: 1;
+        }
+
+        .row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+        }
+
+        input[type="text"] {
+            flex-grow: 1;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: #fff;
+            padding: 8px 12px;
+            border-radius: 6px;
+            outline: none;
+            font-size: 13px;
+        }
+
+        input[type="text"]:focus {
+            border-color: #38bdf8;
+        }
+
+        button.load-btn {
+            background: #38bdf8;
+            color: #111;
+            border: none;
+            border-radius: 6px;
+            padding: 8px 16px;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 13px;
+            transition: 0.2s;
+        }
+
+        button.load-btn:hover {
+            background: #7dd3fc;
+        }
+
+        label {
+            font-size: 12px;
+            color: #cbd5e1;
+            min-width: 35px;
+        }
+
+        input[type="range"] {
+            flex-grow: 1;
+            accent-color: #38bdf8;
+            cursor: pointer;
+        }
+
+        /* 하단 메인 바 (항상 보임) - 윈도우 작업표시줄 사이즈(48px) */
+        .taskbar-main {
+            height: 48px;
+            min-height: 48px;
+            background: rgba(15, 15, 20, 0.4);
+            /* 투명도 0.85 -> 0.4 대폭 증가 */
+            backdrop-filter: blur(15px);
+            -webkit-backdrop-filter: blur(15px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-left: none;
+            border-radius: 0px;
+            /* 모든 모서리를 직각으로 깎음 */
+            display: flex;
+            align-items: center;
+            padding: 0 15px;
+            gap: 15px;
+            box-shadow: 0 -4px 10px rgba(0, 0, 0, 0.3);
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .ctrl-btn {
+            background: transparent;
+            border: none;
+            color: #fff;
+            font-size: 18px;
+            cursor: pointer;
+            transition: transform 0.1s, color 0.1s;
+        }
+
+        .ctrl-btn:hover {
+            transform: scale(1.15);
+            color: #38bdf8;
+        }
+
+        .play-btn {
+            font-size: 22px;
+            color: #38bdf8;
+        }
+
+        /* 텍스트 줄바꿈 없이 흐르게 */
+        .track-marquee {
+            flex-grow: 1;
+            overflow: hidden;
+            white-space: nowrap;
+            position: relative;
+            font-size: 14px;
+            font-weight: 600;
+            color: #f8fafc;
+            /* 양 끝 흐리게 마스크 처리 */
+            mask-image: linear-gradient(to right, transparent, black 10%, black 90%, transparent);
+            -webkit-mask-image: linear-gradient(to right, transparent, black 10%, black 90%, transparent);
+        }
+
+        .track-marquee span {
+            display: inline-block;
+            padding-left: 100%;
+            animation: marquee 15s linear infinite;
+        }
+
+        @keyframes marquee {
+            0% {
+                transform: translate(0, 0);
+            }
+
+            100% {
+                transform: translate(-100%, 0);
+            }
+        }
+
+        .time-display {
+            font-size: 13px;
+            color: #94a3b8;
+            min-width: 85px;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+            font-weight: 600;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="yt-player"></div>
+
+    <div class="container">
+        <!-- 확장 시 위로 솟아오르는 패널 -->
+        <div class="expanded-panel">
+            <div class="row">
+                <input type="text" id="url-input" placeholder="유튜브 URL / 재생목록 URL">
+                <button class="load-btn" id="btn-load">로드</button>
+            </div>
+            <div class="row">
+                <label>볼륨</label>
+                <input type="range" id="vol-slider" min="0" max="100" value="50">
+            </div>
+        </div>
+
+        <!-- 항상 보이는 하단 가로 바 -->
+        <div class="taskbar-main" id="main-bar">
+            <div class="controls">
+                <button class="ctrl-btn" id="btn-prev">⏮</button>
+                <button class="ctrl-btn play-btn" id="btn-play">▶</button>
+                <button class="ctrl-btn" id="btn-next">⏭</button>
+                <button class="ctrl-btn" id="btn-shuffle" style="opacity: 0.5; font-size:16px;">🔀</button>
+            </div>
+
+            <div class="track-marquee">
+                <span id="track-title">재생할 URL을 위에 입력해주세요</span>
+            </div>
+
+            <div class="time-display" id="time-display">0:00 / 0:00</div>
+        </div>
+    </div>
+
+    <script>
+        let player = null;
+        let progressTimer = null;
+        let isShuffle = false;
+
+        function onYouTubeIframeAPIReady() {
+            player = new YT.Player('yt-player', {
+                height: '200', width: '200', videoId: '',
+                playerVars: { autoplay: 1, controls: 0, modestbranding: 1 },
+                events: { onReady: onPlayerReady, onStateChange: onPlayerStateChange }
+            });
+        }
+
+        function onPlayerReady() {
+            player.setVolume(50);
+        }
+
+        function onPlayerStateChange(event) {
+            const state = event.data;
+            if (state === YT.PlayerState.PLAYING) {
+                document.getElementById('btn-play').textContent = '⏸';
+                updateTitle();
+                startProgress();
+            } else if (state === YT.PlayerState.PAUSED || state === YT.PlayerState.ENDED) {
+                document.getElementById('btn-play').textContent = '▶';
+                stopProgress();
+            }
+        }
+
+        function updateTitle() {
+            const data = player.getVideoData();
+            if (data && data.title) {
+                const titleEl = document.getElementById('track-title');
+                titleEl.textContent = data.title;
+                // 애니메이션 리셋 트릭
+                titleEl.style.animation = 'none';
+                titleEl.offsetHeight;
+                titleEl.style.animation = null;
+            }
+        }
+
+        function formatTime(seconds) {
+            if (!seconds || isNaN(seconds)) return "0:00";
+            const m = Math.floor(seconds / 60);
+            const s = Math.floor(seconds % 60);
+            return `${m}:${s < 10 ? '0' : ''}${s}`;
+        }
+
+        function startProgress() {
+            if (progressTimer) clearInterval(progressTimer);
+            progressTimer = setInterval(() => {
+                if (!player) return;
+                const cur = player.getCurrentTime();
+                const dur = player.getDuration();
+                document.getElementById('time-display').textContent = `${formatTime(cur)} / ${formatTime(dur)}`;
+            }, 1000);
+        }
+
+        function stopProgress() {
+            if (progressTimer) clearInterval(progressTimer);
+        }
+
+        // 제어 버튼
+        document.getElementById('btn-play').addEventListener('click', () => {
+            if (!player) return;
+            player.getPlayerState() === YT.PlayerState.PLAYING ? player.pauseVideo() : player.playVideo();
+        });
+        document.getElementById('btn-prev').addEventListener('click', () => {
+            if (!player) return;
+            if (player.previousVideo) player.previousVideo();
+        });
+        document.getElementById('btn-next').addEventListener('click', () => {
+            if (!player) return;
+            if (player.nextVideo) player.nextVideo();
+        });
+        document.getElementById('btn-shuffle').addEventListener('click', (e) => {
+            if (player && player.setShuffle) {
+                isShuffle = !isShuffle;
+                player.setShuffle(isShuffle);
+                e.target.style.opacity = isShuffle ? '1' : '0.5';
+                e.target.style.color = isShuffle ? '#38bdf8' : '#fff';
+            }
+        });
+
+        // URL 로드
+        document.getElementById('btn-load').addEventListener('click', () => {
+            let val = document.getElementById('url-input').value.trim();
+            if (!val || !player) return;
+
+            let playlistId = val.match(/[?&]list=([a-zA-Z0-9_-]+)/);
+            if (playlistId) {
+                player.loadPlaylist({ list: playlistId[1], listType: 'playlist' });
+            } else {
+                let videoId = val;
+                const vMatch = val.match(/(?:v=|youtu\.be\/)([^&]+)/);
+                if (vMatch) videoId = vMatch[1];
+                player.loadVideoById(videoId);
+            }
+        });
+
+        // 엔터키 로드 지원
+        document.getElementById('url-input').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') document.getElementById('btn-load').click();
+        });
+
+        // 볼륨 조절
+        document.getElementById('vol-slider').addEventListener('input', (e) => {
+            if (player) player.setVolume(parseInt(e.target.value));
+        });
+
+    </script>
+</body>
+
+</html>

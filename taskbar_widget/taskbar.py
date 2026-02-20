@@ -1,0 +1,257 @@
+import sys
+import os
+import threading
+import http.server
+import socketserver
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QSystemTrayIcon, QMenu
+)
+from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWebEngineCore import QWebEngineSettings
+from PyQt6.QtCore import Qt, QUrl, QPropertyAnimation, QRect, QEasingCurve
+from PyQt6.QtGui import QColor, QIcon, QPixmap
+
+def make_icon(color="#38bdf8", size=16):
+    pixmap = QPixmap(size, size)
+    pixmap.fill(QColor(Qt.GlobalColor.transparent))
+    from PyQt6.QtGui import QPainter
+    painter = QPainter(pixmap)
+    painter.setBrush(QColor(color))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawEllipse(0, 0, size, size)
+    painter.end()
+    return QIcon(pixmap)
+
+class SidePanel(QWidget):
+    """드래그와 높이 확장을 담당하는 좌측 패널"""
+    def __init__(self, parent_win):
+        super().__init__()
+        self.parent_win = parent_win
+        self.setFixedWidth(24)
+        self.setStyleSheet("""
+            QWidget {
+                background: rgba(15, 15, 20, 0.4); /* 투명도 0.9 -> 0.4 대폭 증가 */
+                color: #cbd5e1;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-right: none;
+                border-top-left-radius: 12px;
+                border-bottom-left-radius: 0px; /* 각진 윈도우 스타일 하단 모서리 */
+            }
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0) # 버튼이 튀어나오지 않게 여백 완전히 없앰
+        layout.setSpacing(0)
+        
+        layout.addStretch() # 위쪽(확장 영역)은 빈 공간으로 둠
+        
+        # 하단 48px 고정 영역 (버튼과 라벨을 하나로 묶음)
+        bottom_widget = QWidget()
+        bottom_widget.setFixedHeight(45)
+        bottom_layout = QVBoxLayout(bottom_widget)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(0)
+        
+        # 확장/축소 토글 버튼
+        self.btn_expand = QPushButton("🔼")
+        self.btn_expand.setFixedSize(24, 20)
+        self.btn_expand.setStyleSheet("background: transparent; border: none; font-size: 11px; margin-top: 2px; color: white;")
+        self.btn_expand.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_expand.clicked.connect(self.parent_win.toggle_expand)
+        
+        # 드래그 손잡이용 라벨 (1개로 축소)
+        self.lbl_drag = QLabel("⋮")
+        self.lbl_drag.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_drag.setStyleSheet("font-size: 16px; color: #64748b; background: transparent; border: none; margin-bottom: 2px;")
+        self.lbl_drag.setCursor(Qt.CursorShape.OpenHandCursor)
+        
+        bottom_layout.addWidget(self.btn_expand)
+        bottom_layout.addWidget(self.lbl_drag)
+        
+        layout.addWidget(bottom_widget)
+        
+        self._drag_pos = None
+
+    def mousePressEvent(self, event):
+        if self.parent_win.is_locked:
+            return
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.lbl_drag.setCursor(Qt.CursorShape.ClosedHandCursor)
+            self._drag_pos = event.globalPosition().toPoint() - self.parent_win.pos()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self.parent_win.is_locked:
+            return
+        if self._drag_pos is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            # 창 드래그 이동 (자유롭게)
+            self.parent_win.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None
+        self.lbl_drag.setCursor(Qt.CursorShape.OpenHandCursor)
+        event.accept()
+
+
+class TaskbarWidget(QMainWindow):
+    def __init__(self, app: QApplication, server_port: int):
+        super().__init__()
+        self.app = app
+        self.server_port = server_port
+        
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.Tool
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        
+        self.screen_geo = QApplication.primaryScreen().geometry()
+        
+        self.w = 560
+        self.h_min = 48
+        self.h_max = 150
+        self.x_pos = (self.screen_geo.width() - self.w) // 2
+        # 초기 위치: 화면 맨 밑바닥에서 약간 띄움
+        self.y_min = self.screen_geo.height() - self.h_min - 40 
+        
+        self.setGeometry(self.x_pos, self.y_min, self.w, self.h_min)
+        self.expanded = False
+        self.is_locked = False
+        self.is_always_on_top = True
+        
+        central = QWidget()
+        central.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setCentralWidget(central)
+        
+        # 가로 레이아웃 (좌측 패널 + 우측 HTML 위젯)
+        hbox = QHBoxLayout(central)
+        hbox.setContentsMargins(0, 0, 0, 0)
+        hbox.setSpacing(0)
+        
+        self.side_panel = SidePanel(self)
+        hbox.addWidget(self.side_panel)
+        
+        self.view = QWebEngineView()
+        self.view.page().setBackgroundColor(QColor(Qt.GlobalColor.transparent))
+        
+        settings = self.view.settings()
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.AllowRunningInsecureContent, True)
+        
+        self.view.load(QUrl(f"http://localhost:{self.server_port}/taskbar.html"))
+        hbox.addWidget(self.view)
+        
+        self._setup_tray()
+        
+        self.anim = QPropertyAnimation(self, b"geometry")
+        self.anim.setDuration(350) # 0.35초로 약간 늘려서 부드럽게
+        self.anim.setEasingCurve(QEasingCurve.Type.InOutQuad) # 오두방정 떨지 않고 스무스하게 시작하고 끝남
+
+    def _setup_tray(self):
+        icon = make_icon("#38bdf8")
+        self.tray = QSystemTrayIcon(icon, self)
+        self.tray.setToolTip("Taskbar YouTube Widget")
+        
+        menu = QMenu()
+        action_toggle = menu.addAction("보이기 / 숨기기")
+        action_toggle.triggered.connect(self._toggle_visibility)
+        
+        menu.addSeparator()
+        
+        action_ontop = menu.addAction("항상 위")
+        action_ontop.setCheckable(True)
+        action_ontop.setChecked(True)
+        action_ontop.triggered.connect(self._toggle_ontop)
+        
+        action_lock = menu.addAction("위치 고정")
+        action_lock.setCheckable(True)
+        action_lock.setChecked(False)
+        action_lock.triggered.connect(self._toggle_lock)
+        
+        menu.addSeparator()
+        action_quit = menu.addAction("종료")
+        action_quit.triggered.connect(self.app.quit)
+        self.tray.setContextMenu(menu)
+        self.tray.show()
+
+    def _toggle_ontop(self, checked):
+        self.is_always_on_top = checked
+        flags = self.windowFlags()
+        if checked:
+            flags |= Qt.WindowType.WindowStaysOnTopHint
+        else:
+            flags &= ~Qt.WindowType.WindowStaysOnTopHint
+        self.setWindowFlags(flags)
+        
+        if self.isVisible():
+            self.show() # 플래그 변경 후 화면에서 사라지는 현상 방지용 재호출
+
+    def _toggle_lock(self, checked):
+        self.is_locked = checked
+
+    def _toggle_visibility(self):
+        if self.isVisible():
+            self.hide()
+        else:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+    def toggle_expand(self):
+        """설정 패널(높이 150px)과 닫힌 상태(높이 48px)를 전환"""
+        self.anim.stop()
+        self.anim.setStartValue(self.geometry())
+        
+        cx = self.x()
+        cy = self.y()
+        
+        if self.expanded:
+            # 축소: 높이 감소분 만큼 y좌표를 내려서 바닥 위치 고정
+            self.anim.setEndValue(QRect(cx, cy + (self.h_max - self.h_min), self.w, self.h_min))
+            self.side_panel.btn_expand.setText("🔼")
+            self.expanded = False
+        else:
+            # 확장: 높이 증가분 만큼 y좌표를 올려서 바닥 위치 고정
+            self.anim.setEndValue(QRect(cx, cy - (self.h_max - self.h_min), self.w, self.h_max))
+            self.side_panel.btn_expand.setText("🔽")
+            self.expanded = True
+            
+        self.anim.start()
+
+class LocalHTTPServer:
+    def __init__(self, port=0):
+        self.port = port
+        self.server = None
+        self.thread = None
+
+    def start(self):
+        os.chdir(os.path.dirname(os.path.abspath(__file__)))
+        try:
+            Handler = http.server.SimpleHTTPRequestHandler
+            class QuietHandler(Handler):
+                def log_message(self, format, *args): pass
+            self.server = socketserver.TCPServer(("", self.port), QuietHandler)
+            self.port = self.server.server_address[1]
+            self.thread = threading.Thread(target=self.server.serve_forever)
+            self.thread.daemon = True
+            self.thread.start()
+        except OSError:
+            pass 
+
+if __name__ == "__main__":
+    local_server = LocalHTTPServer(port=0)
+    local_server.start()
+    
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--autoplay-policy=no-user-gesture-required --disable-features=HardwareMediaKeyHandling"
+    
+    app = QApplication(sys.argv)
+    app.setApplicationName("Taskbar YouTube Widget")
+    app.setQuitOnLastWindowClosed(False)
+    
+    window = TaskbarWidget(app, local_server.port)
+    window.show()
+    sys.exit(app.exec())

@@ -274,10 +274,11 @@
 
         <div class="controls">
             <button class="ctrl-btn" id="btn-prev">⏮</button>
-            <button class="ctrl-btn" id="btn-back">⏪</button>
+            <button class="ctrl-btn" id="btn-back" style="display: none;">⏪</button>
             <button class="ctrl-btn play-btn" id="btn-play">▶</button>
-            <button class="ctrl-btn" id="btn-fwd">⏩</button>
+            <button class="ctrl-btn" id="btn-fwd" style="display: none;">⏩</button>
             <button class="ctrl-btn" id="btn-next">⏭</button>
+            <button class="ctrl-btn" id="btn-shuffle" style="margin-left:8px; opacity:0.5;">🔀</button>
         </div>
 
         <div class="volume-row">
@@ -467,6 +468,17 @@
 
         document.getElementById('btn-next').addEventListener('click', () => {
             if (player && player.nextVideo) player.nextVideo();
+        });
+
+        // 셔플 버튼 로직
+        let isShuffle = false;
+        document.getElementById('btn-shuffle').addEventListener('click', (e) => {
+            if (player && player.setShuffle) {
+                isShuffle = !isShuffle;
+                player.setShuffle(isShuffle);
+                e.target.style.opacity = isShuffle ? '1' : '0.5';
+                e.target.style.color = isShuffle ? '#a78bfa' : '#fff';
+            }
         });
 
         document.getElementById('volume').addEventListener('input', (e) => {
