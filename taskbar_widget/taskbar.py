@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings
-from PyQt6.QtCore import Qt, QUrl, QPropertyAnimation, QRect, QEasingCurve
+from PyQt6.QtCore import Qt, QUrl, QRect
 from PyQt6.QtGui import QColor, QIcon, QPixmap
 
 def make_icon(color="#38bdf8", size=16):
@@ -34,8 +34,7 @@ class SidePanel(QWidget):
                 color: #cbd5e1;
                 border: 1px solid rgba(255, 255, 255, 0.1);
                 border-right: none;
-                border-top-left-radius: 12px;
-                border-bottom-left-radius: 0px; /* 각진 윈도우 스타일 하단 모서리 */
+                border-radius: 0px; /* 라운드 사각형 요소 완전히 파괴 */
             }
         """)
         
@@ -146,10 +145,6 @@ class TaskbarWidget(QMainWindow):
         hbox.addWidget(self.view)
         
         self._setup_tray()
-        
-        self.anim = QPropertyAnimation(self, b"geometry")
-        self.anim.setDuration(350) # 0.35초로 약간 늘려서 부드럽게
-        self.anim.setEasingCurve(QEasingCurve.Type.InOutQuad) # 오두방정 떨지 않고 스무스하게 시작하고 끝남
 
     def _setup_tray(self):
         icon = make_icon("#38bdf8")
@@ -202,25 +197,20 @@ class TaskbarWidget(QMainWindow):
             self.activateWindow()
 
     def toggle_expand(self):
-        """설정 패널(높이 150px)과 닫힌 상태(높이 48px)를 전환"""
-        self.anim.stop()
-        self.anim.setStartValue(self.geometry())
-        
+        """설정 패널(높이 150px)과 닫힌 상태(높이 48px)를 일순간에 켜고 끔 (흔들림 방지용)"""
         cx = self.x()
         cy = self.y()
         
         if self.expanded:
-            # 축소: 높이 감소분 만큼 y좌표를 내려서 바닥 위치 고정
-            self.anim.setEndValue(QRect(cx, cy + (self.h_max - self.h_min), self.w, self.h_min))
+            # 축소
+            self.setGeometry(QRect(cx, cy + (self.h_max - self.h_min), self.w, self.h_min))
             self.side_panel.btn_expand.setText("🔼")
             self.expanded = False
         else:
-            # 확장: 높이 증가분 만큼 y좌표를 올려서 바닥 위치 고정
-            self.anim.setEndValue(QRect(cx, cy - (self.h_max - self.h_min), self.w, self.h_max))
+            # 확장
+            self.setGeometry(QRect(cx, cy - (self.h_max - self.h_min), self.w, self.h_max))
             self.side_panel.btn_expand.setText("🔽")
             self.expanded = True
-            
-        self.anim.start()
 
 class LocalHTTPServer:
     def __init__(self, port=0):

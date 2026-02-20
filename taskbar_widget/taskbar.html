@@ -57,7 +57,8 @@
             border: 1px solid rgba(255, 255, 255, 0.1);
             border-left: none;
             border-bottom: none;
-            border-radius: 0 12px 0 0;
+            border-radius: 0px;
+            /* 완벽한 직각 */
             padding: 15px 20px;
             display: flex;
             flex-direction: column;
@@ -67,6 +68,13 @@
             flex-grow: 1;
             overflow: hidden;
             opacity: 1;
+        }
+
+        /* 창 높이가 작을 때는 패널을 완전히 숨김 (클릭 방지) */
+        @media (max-height: 50px) {
+            .expanded-panel {
+                display: none !important;
+            }
         }
 
         .row {
