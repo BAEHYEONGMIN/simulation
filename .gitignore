@@ -1,0 +1,33 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller build and spec files
+build/
+dist/
+*.spec
+
+# Virtual environments
+venv/
+env/
+.env
+
+# OS and Executable files
+*.exe
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Lively Wallpaper specific (optional if you don't track lively configs)
+# LivelyInfo.json

@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>YouTube Widget</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet" />
+    <style>
+        html {
+            background: transparent;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: transparent;
+            font-family: 'Inter', sans-serif;
+            display: flex;
+            align-items: flex-end;
+            justify-content: flex-start;
+            height: 100vh;
+            padding: 24px;
+            user-select: none;
+        }
+
+        :root {
+            --widget-opacity: 0.82;
+            --widget-width: 320px;
+            /* ← 여기서 위쓳 너비 조절 */
+        }
+
+        .widget {
+            width: var(--widget-width);
+            background: rgba(15, 15, 20, 0.88);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 20px;
+            padding: 20px;
+            color: #fff;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+            transition: opacity 0.2s;
+        }
+
+        #yt-player {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            pointer-events: none;
+            z-index: -1;
+        }
+
+        .thumbnail-wrap {
+            position: relative;
+            width: 100%;
+            height: 160px;
+            border-radius: 12px;
+            overflow: hidden;
+            margin-bottom: 14px;
+            background: #1a1a2e;
+        }
+
+        .thumbnail-wrap img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transition: opacity 0.3s;
+        }
+
+        .thumbnail-overlay {
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(to top, rgba(0, 0, 0, 0.6) 0%, transparent 60%);
+        }
+
+        .track-info {
+            margin-bottom: 14px;
+        }
+
+        .track-title {
+            font-size: 14px;
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-bottom: 4px;
+        }
+
+        .track-channel {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.5);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .progress-wrap {
+            margin-bottom: 14px;
+        }
+
+        .progress-bar-bg {
+            width: 100%;
+            height: 3px;
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 99px;
+            cursor: pointer;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #a78bfa, #60a5fa);
+            border-radius: 99px;
+            width: 0%;
+            transition: width 0.5s linear;
+        }
+
+        .time-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 10px;
+            color: rgba(255, 255, 255, 0.4);
+            margin-top: 5px;
+        }
+
+        .controls {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 14px;
+        }
+
+        .ctrl-btn {
+            background: none;
+            border: none;
+            color: rgba(255, 255, 255, 0.7);
+            cursor: pointer;
+            font-size: 18px;
+            padding: 6px;
+            border-radius: 50%;
+            transition: color 0.2s, background 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .ctrl-btn:hover {
+            color: #fff;
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .play-btn {
+            width: 44px;
+            height: 44px;
+            background: linear-gradient(135deg, #a78bfa, #60a5fa);
+            border-radius: 50%;
+            font-size: 18px;
+            color: #fff;
+            box-shadow: 0 4px 14px rgba(96, 165, 250, 0.35);
+        }
+
+        .play-btn:hover {
+            background: linear-gradient(135deg, #c4b5fd, #93c5fd);
+        }
+
+        .volume-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .vol-icon {
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.5);
+            flex-shrink: 0;
+        }
+
+        input[type=range] {
+            -webkit-appearance: none;
+            flex: 1;
+            height: 3px;
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 99px;
+            outline: none;
+            cursor: pointer;
+            touch-action: none;
+            -webkit-user-drag: none;
+        }
+
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 12px;
+            height: 12px;
+            background: #fff;
+            border-radius: 50%;
+            cursor: pointer;
+        }
+
+        .url-row {
+            display: flex;
+            gap: 6px;
+            margin-top: 12px;
+        }
+
+        .url-input {
+            flex: 1;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            padding: 6px 10px;
+            color: #fff;
+            font-size: 11px;
+            outline: none;
+            font-family: 'Inter', sans-serif;
+        }
+
+        .url-input::placeholder {
+            color: rgba(255, 255, 255, 0.3);
+        }
+
+        .url-input:focus {
+            border-color: rgba(167, 139, 250, 0.5);
+        }
+
+        .url-btn {
+            background: rgba(167, 139, 250, 0.25);
+            border: 1px solid rgba(167, 139, 250, 0.4);
+            border-radius: 8px;
+            color: #c4b5fd;
+            font-size: 11px;
+            padding: 6px 10px;
+            cursor: pointer;
+            font-family: 'Inter', sans-serif;
+            transition: background 0.2s;
+        }
+
+        .url-btn:hover {
+            background: rgba(167, 139, 250, 0.4);
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="widget">
+        <div id="yt-player"></div>
+
+        <div class="thumbnail-wrap">
+            <img id="thumb" src="" alt="thumbnail" onerror="this.style.opacity='0'" />
+            <div class="thumbnail-overlay"></div>
+        </div>
+
+        <div class="track-info">
+            <div class="track-title" id="track-title">유튜브 URL을 입력하세요</div>
+            <div class="track-channel" id="track-channel">채널명</div>
+        </div>
+
+        <div class="progress-wrap">
+            <div class="progress-bar-bg" id="progress-bg">
+                <div class="progress-bar-fill" id="progress-fill"></div>
+            </div>
+            <div class="time-row">
+                <span id="time-cur">0:00</span>
+                <span id="time-dur">0:00</span>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button class="ctrl-btn" id="btn-prev">⏮</button>
+            <button class="ctrl-btn" id="btn-back">⏪</button>
+            <button class="ctrl-btn play-btn" id="btn-play">▶</button>
+            <button class="ctrl-btn" id="btn-fwd">⏩</button>
+            <button class="ctrl-btn" id="btn-next">⏭</button>
+        </div>
+
+        <div class="volume-row">
+            <span class="vol-icon" id="vol-icon" title="음소거" style="cursor:pointer;">🔉</span>
+            <input type="range" id="volume" min="0" max="100" value="70" />
+        </div>
+
+        <div class="volume-row" style="margin-top:8px;">
+            <span class="vol-icon" title="투명도">◑</span>
+            <input type="range" id="opacity-slider" min="10" max="95" value="82" />
+        </div>
+
+        <div class="url-row">
+            <input class="url-input" id="url-input" type="text" placeholder="영상 URL / 재생목록 URL / 영상 ID" />
+            <button class="url-btn" id="url-load">재생</button>
+        </div>
+    </div>
+
+    <script src="https://www.youtube.com/iframe_api"></script>
+    <script>
+        let player = null;
+        let progressTimer = null;
+        let lastVideoId = null;
+
+        function onYouTubeIframeAPIReady() {
+            player = new YT.Player('yt-player', {
+                height: '1', width: '1', videoId: '',
+                playerVars: { autoplay: 0, controls: 0, modestbranding: 1, playsinline: 1 },
+                events: { onReady: onPlayerReady, onStateChange: onPlayerStateChange }
+            });
+        }
+
+        function onPlayerReady() { setVolume(70); }
+
+        function onPlayerStateChange(event) {
+            const state = event.data;
+            if (state === YT.PlayerState.PLAYING) {
+                document.getElementById('btn-play').textContent = '⏸';
+                startProgress();
+                // 영상이 바뀌었을 때만 메타 갱신 (플레이리스트 자동 넘김 감지)
+                const data = player.getVideoData();
+                if (data && data.video_id && data.video_id !== lastVideoId) {
+                    lastVideoId = data.video_id;
+                    updateMeta();
+                    updateThumb(data.video_id);
+                }
+            } else if (state === YT.PlayerState.PAUSED || state === YT.PlayerState.ENDED) {
+                document.getElementById('btn-play').textContent = '▶';
+                stopProgress();
+            }
+        }
+
+        // URL에서 재생목록 ID 추출
+        function extractPlaylistId(input) {
+            const match = input.match(/[?&]list=([a-zA-Z0-9_-]+)/);
+            return match ? match[1] : null;
+        }
+
+        // URL에서 영상 ID 추출
+        function extractVideoId(input) {
+            input = input.trim();
+            if (/^[a-zA-Z0-9_-]{11}$/.test(input)) return input;
+            const match = input.match(/(?:v=|youtu\.be\/|embed\/)([a-zA-Z0-9_-]{11})/);
+            return match ? match[1] : null;
+        }
+
+        // 썸네일 업데이트
+        function updateThumb(videoId) {
+            const thumb = document.getElementById('thumb');
+            // maxresdefault 없으면 hqdefault 폴백
+            thumb.onerror = function () {
+                this.src = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
+                this.onerror = null;
+            };
+            thumb.src = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
+            thumb.style.opacity = '1';
+        }
+
+        function loadVideo(input) {
+            if (!player || !player.loadVideoById) return;
+            input = input.trim();
+
+            const playlistId = extractPlaylistId(input);
+            if (playlistId) {
+                // 재생목록 URL인 경우
+                const videoId = extractVideoId(input); // 특정 영상 시작점 있으면 사용
+                player.loadPlaylist({
+                    listType: 'playlist',
+                    list: playlistId,
+                    startSeconds: 0
+                });
+                if (videoId) updateThumb(videoId);
+                document.getElementById('track-title').textContent = '재생목록 로딩 중...';
+                document.getElementById('track-channel').textContent = '';
+                return;
+            }
+
+            // 단일 영상 URL
+            const vid = extractVideoId(input);
+            if (!vid) { alert('올바른 유튜브 URL, 재생목록 URL, 또는 영상 ID를 입력해주세요.'); return; }
+            player.loadVideoById(vid);
+            updateThumb(vid);
+        }
+
+        function updateMeta() {
+            if (!player || !player.getVideoData) return;
+            const data = player.getVideoData();
+            if (data && data.title) {
+                document.getElementById('track-title').textContent = data.title || '알 수 없음';
+                document.getElementById('track-channel').textContent = data.author || '';
+            }
+        }
+
+        function startProgress() {
+            stopProgress();
+            progressTimer = setInterval(() => {
+                if (!player || !player.getCurrentTime) return;
+                const cur = player.getCurrentTime() || 0;
+                const dur = player.getDuration() || 0;
+                if (dur > 0) document.getElementById('progress-fill').style.width = ((cur / dur) * 100) + '%';
+                document.getElementById('time-cur').textContent = formatTime(cur);
+                document.getElementById('time-dur').textContent = formatTime(dur);
+            }, 500);
+        }
+
+        function stopProgress() {
+            if (progressTimer) clearInterval(progressTimer);
+            progressTimer = null;
+        }
+
+        function formatTime(sec) {
+            const m = Math.floor(sec / 60);
+            const s = Math.floor(sec % 60);
+            return `${m}:${s.toString().padStart(2, '0')}`;
+        }
+
+        let isMuted = false;
+
+        function setVolume(v) { if (player && player.setVolume) player.setVolume(v); }
+
+        document.getElementById('vol-icon').addEventListener('click', () => {
+            if (!player) return;
+            isMuted = !isMuted;
+            if (isMuted) {
+                player.mute();
+                document.getElementById('vol-icon').textContent = '🔇';
+            } else {
+                player.unMute();
+                setVolume(parseInt(document.getElementById('volume').value));
+                document.getElementById('vol-icon').textContent = '🔉';
+            }
+        });
+
+        document.getElementById('opacity-slider').addEventListener('input', (e) => {
+            // 위젯 전체 투명도 조절 (배경뿐 아니라 콘텐츠 포함)
+            document.querySelector('.widget').style.opacity = (parseInt(e.target.value) / 100).toFixed(2);
+        });
+
+        document.getElementById('progress-bg').addEventListener('click', (e) => {
+            if (!player || !player.getDuration) return;
+            const rect = e.currentTarget.getBoundingClientRect();
+            player.seekTo(player.getDuration() * ((e.clientX - rect.left) / rect.width), true);
+        });
+
+        document.getElementById('btn-play').addEventListener('click', () => {
+            if (!player) return;
+            player.getPlayerState() === YT.PlayerState.PLAYING ? player.pauseVideo() : player.playVideo();
+        });
+
+        document.getElementById('btn-back').addEventListener('click', () => {
+            if (player) player.seekTo(Math.max(0, player.getCurrentTime() - 10), true);
+        });
+
+        document.getElementById('btn-fwd').addEventListener('click', () => {
+            if (player) player.seekTo(player.getCurrentTime() + 10, true);
+        });
+
+        document.getElementById('btn-prev').addEventListener('click', () => {
+            if (!player) return;
+            // 재생목록이면 이전 곡, 아니면 처음으로
+            if (player.previousVideo) {
+                player.previousVideo();
+            } else {
+                player.seekTo(0, true);
+            }
+        });
+
+        document.getElementById('btn-next').addEventListener('click', () => {
+            if (player && player.nextVideo) player.nextVideo();
+        });
+
+        document.getElementById('volume').addEventListener('input', (e) => {
+            setVolume(parseInt(e.target.value));
+        });
+
+        // Lively 드래그 충돌 방지: 슬라이더 조작 시 이벤트 전파 차단
+        document.querySelectorAll('input[type=range]').forEach(el => {
+            el.addEventListener('mousedown', (e) => e.stopPropagation());
+            el.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+            el.addEventListener('dragstart', (e) => e.preventDefault());
+            // pointerdown으로 더 강하게 차단
+            el.addEventListener('pointerdown', (e) => {
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+            });
+        });
+
+        document.getElementById('url-load').addEventListener('click', () => {
+            loadVideo(document.getElementById('url-input').value);
+        });
+
+        document.getElementById('url-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') loadVideo(document.getElementById('url-input').value);
+        });
+    </script>
+
+</body>
+
+</html>
