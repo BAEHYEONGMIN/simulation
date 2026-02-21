@@ -8,7 +8,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings
-from PyQt6.QtCore import Qt, QUrl, QRect
+from PyQt6.QtCore import Qt, QUrl, QRect, QTimer
+import ctypes
 from PyQt6.QtGui import QColor, QIcon, QPixmap
 
 def make_icon(color="#38bdf8", size=16):
@@ -116,9 +117,11 @@ class TaskbarWidget(QMainWindow):
         self.y_min = self.screen_geo.height() - self.h_min - 40 
         
         self.setGeometry(self.x_pos, self.y_min, self.w, self.h_min)
+        # 옵션 플래그
         self.expanded = False
         self.is_locked = False
         self.is_always_on_top = True
+        self.is_force_topmost = True  # 새롭게 추가된 강력한 최상단 모드 플래그
         
         central = QWidget()
         central.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -146,6 +149,41 @@ class TaskbarWidget(QMainWindow):
         
         self._setup_tray()
 
+        # 강제 최상단 유지 타이머 (윈도우 작업 표시줄이나 게임 등에 가려지지 않게 방어, 50ms로 단축)
+        self.topmost_timer = QTimer(self)
+        self.topmost_timer.timeout.connect(self._enforce_topmost)
+        self.topmost_timer.start(50)
+
+    def changeEvent(self, event):
+        if event.type() == event.Type.WindowStateChange:
+            if self.isMinimized() and self.is_always_on_top:
+                # 윈도우 작업표시줄이나 바탕화면 보기에 의해 위젯이 최소화/숨겨지면 즉시 복구
+                self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+                self.showNormal()
+                self.raise_()
+        super().changeEvent(event)
+
+    def hideEvent(self, event):
+        # 만약 시스템에 의해 강제로 숨겨진다면 (사용자가 숨기기 누른게 아니라면)
+        # 방어 로직 추가 가능하지만, 일단은 기본 유지
+        super().hideEvent(event)
+
+    def _enforce_topmost(self):
+        # '강제 맨 위 유지 모드'가 켜져있을 때만 동작
+        if self.is_always_on_top and self.is_force_topmost:
+            # 창이 숨겨져버렸다면 다시 끌어올림 (단, 트레이에서 수동으로 숨긴 경우는 제외하도록 isVisible 체크는 유지하되, 약간의 강제성 부여)
+            if not self.isVisible():
+                return
+                
+            hwnd = int(self.winId())
+            # HWND_TOPMOST = -1, SWP_NOMOVE = 0x0002, SWP_NOSIZE = 0x0001, SWP_NOACTIVATE = 0x0010
+            # 윈도우 작업 표시줄이나 게임 창이 계속 TOPMOST를 가져가려고 할 때, 우리 위젯을 그들보다 더 위로 쑤셔넣음
+            # BringWindowToTop으로 OS 수준에서 제일 위로 강제 호출
+            ctypes.windll.user32.BringWindowToTop(hwnd)
+            # 확실하게 TOPMOST 속성을 0.5초마다 캐시 우회하여 재박제
+            ctypes.windll.user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 0x0013) # NOTOPMOST
+            ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0013) # TOPMOST
+
     def _setup_tray(self):
         icon = make_icon("#38bdf8")
         self.tray = QSystemTrayIcon(icon, self)
@@ -161,6 +199,11 @@ class TaskbarWidget(QMainWindow):
         action_ontop.setCheckable(True)
         action_ontop.setChecked(True)
         action_ontop.triggered.connect(self._toggle_ontop)
+        
+        action_force_topmost = menu.addAction("강제 맨 위 유지 모드 (게임/작업표시줄 뚫기)")
+        action_force_topmost.setCheckable(True)
+        action_force_topmost.setChecked(False)
+        action_force_topmost.triggered.connect(self._toggle_force_topmost)
         
         action_lock = menu.addAction("위치 고정")
         action_lock.setCheckable(True)
@@ -184,6 +227,9 @@ class TaskbarWidget(QMainWindow):
         
         if self.isVisible():
             self.show() # 플래그 변경 후 화면에서 사라지는 현상 방지용 재호출
+
+    def _toggle_force_topmost(self, checked):
+        self.is_force_topmost = checked
 
     def _toggle_lock(self, checked):
         self.is_locked = checked
