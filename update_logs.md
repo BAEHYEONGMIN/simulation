@@ -22,3 +22,51 @@
   1. **Z-Order 폭격**: 0.05초(50ms)마다 OS에 "내 위젯을 최상위 캐시에서 빼라(NOTOPMOST) -> 다시 즉시 가장 위로 올려라(TOPMOST)" 명령을 쉬지 않고 내리도록 타이머 적용. 이렇게 OS의 최상위 스케줄러를 무조건 덮어씌워버림.
   2. **시스템 호출 강탈**: `ctypes.windll.user32.BringWindowToTop(hwnd)` API를 호출해서 OS 커널에 제일 앞단 화면으로 강제 소환해버림.
   3. **Win+D최소화 방어**: 윈도우 하단 바의 맨 우측 바탕화면 보기를 눌렀을 때 억지로 최소화 당하는 이벤트를 낚아채서 0초 만에 `showNormal()`로 복구시킴.
+
+## 4. PyQt6 QWebEngineView에서 YouTube 오디오가 볼륨 믹서에 전혀 안 나타나는 현상
+
+* **발생 문제**:
+  유튜브 썸네일과 재생 UI는 정상적으로 불러오는데, 실제 오디오가 전혀 재생되지 않으며 윈도우 볼륨 믹서에도 앱이 표시되지 않음.
+
+* **원인**:
+  1. **Chromium 보안 정책**: PyQt6이 내부적으로 사용하는 Chromium 엔진은 최신 YouTube IFrame API가 `file://` 프로토콜(로컬 파일) 기반에서 실행될 때 CORS(Cross-Origin) 보안 정책을 이유로 오디오 스트림 자체를 원천 차단합니다.
+  2. **자동재생(Autoplay) 차단**: Chromium 기본 설정상 사용자 직접 상호작용 없이 오디오가 자동으로 재생되는 것을 막습니다.
+
+* **해결 방법**:
+  1. **내장 HTTP 로컬 서버 탑재**: `file://` 대신 `http://localhost:{port}/player.html`로 파일을 서빙하도록 파이썬 표준 라이브러리(`http.server`, `socketserver`)를 이용한 `LocalHTTPServer` 클래스를 위젯 코드 (`widget.py`, `taskbar.py`) 내부에 직접 탑재했습니다. 앱 실행 시 자동으로 백그라운드(데몬) 스레드로 켜지고, 앱 종료 시 같이 꺼집니다.
+  2. **동적 포트 할당**: 서버 포트를 `8080`같이 고정하면 다른 프로그램과 충돌할 우려가 있어, 파이썬 소켓에 포트 `0`을 전달하여 OS가 빈 포트를 자동으로 할당하게 했습니다.
+  3. **Chromium 자동재생 정책 해제**: `QTWEBENGINE_CHROMIUM_FLAGS` 환경변수에 `--autoplay-policy=no-user-gesture-required` 플래그를 추가하여 미디어 자동재생 제약을 제거했습니다.
+  4. **iframe 표시 방식 조정**: `#yt-player` CSS를 `opacity: 0.01`, `z-index: -1`, `pointer-events: none`으로 설정하여 화면에는 사실상 보이지 않지만 Chromium 엔진이 완전히 숨겨진 요소로 판단하지 않도록(throttling 방지) 했습니다.
+
+  * *적용 예시* (`widget.py` / `taskbar.py` 공통 진입점):
+    ```python
+    local_server = LocalHTTPServer(port=0)
+    local_server.start()
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--autoplay-policy=no-user-gesture-required"
+    # ...
+    self.view.load(QUrl(f"http://localhost:{local_server.port}/player.html"))
+    ```
+
+---
+
+## 5. Taskbar 특화 위젯 (`taskbar_widget`) 개발 중 발생한 UI 이슈
+
+### 5-1. 라운드 테두리(border-radius)가 의도치 않게 생기는 현상
+* **발생 문제**: PyQt6 `QWidget`의 `setStyleSheet()` 속성이 부모로 자식 위젯에 상속되어, 명시적으로 지정하지 않은 자식 위젯에 둥근 테두리가 생기는 현상 반복 발생.
+* **해결 방법**: 의도한 위젯에 `border-radius: 0px`를 명시적으로 지정하여 상속을 강제로 차단합니다.
+
+### 5-2. 창 확장 애니메이션 시 하단 본체 부분이 같이 움직이는 현상
+* **발생 문제**: 🔼 버튼을 눌러 설정 패널이 위로 열릴 때, `QPropertyAnimation`으로 창 geometry를 변경하는 과정에서 OS 레벨의 렌더링 지연으로 인해 창 전체가 들썩이는 현상 발생.
+* **해결 방법**: `QPropertyAnimation` 방식을 완전히 제거하고, `toggle_expand()` 함수 내에서 `self.setGeometry()`를 즉시 호출하도록 변경하여 애니메이션 없이 순간적으로 변환합니다. (들썩임의 원인인 중간 프레임 렌더링 자체를 없앰)
+
+### 5-3. 패널이 닫혔을 때 숨겨진 영역이 클릭을 가로채는 현상
+* **발생 문제**: 창 높이가 48px로 줄어들어도 내부 WebEngine 뷰는 전체 영역을 그대로 유지하고 있어, 상단 설정 패널(`expanded-panel`) 영역이 투명하지만 클릭을 가로채는 현상 발생.
+* **해결 방법**: CSS 미디어 쿼리(`@media (max-height: 50px)`)를 이용하여 창 높이가 50px 이하로 작아질 때 `.expanded-panel`에 `display: none !important`를 적용하여 DOM에서 완전히 사라지게 처리합니다.
+
+### 5-4. "항상 위" 기능을 토글할 때 기존 창 설정이 날아가면서 먹통이 되는 현상
+* **발생 문제**: 시스템 트레이에서 "항상 위" 기능을 껐다 켤 때 `setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, checked)` 방식으로 설정하면 윈도우 내부적인 Z-order와 기존 속성(Frameless 등)이 리셋되면서 창이 윈도우 바 밑으로 숨거나 클릭이 안 되는 버그 발생.
+* **해결 방법**: 기존 플래그 값을 가져와 비트 연산(`|=`, `&= ~`)으로 `WindowStaysOnTopHint` 속성만 덮어씌운 뒤, 화면 일시 사라짐 방지를 위해 `show()` 메서드를 재호출하도록 보강했습니다.
+
+### 5-5. 창 확장 시 UI 고정 버튼들이 위로 딸려 올라가는 현상
+* **발생 문제**: 창 높이가 늘어날 때 내부 레이아웃의 기준점이 명확하지 않아 상단으로 치우쳐지면서 하단에 있어야 할 버튼(🔼)과 그립(⋮) 텍스트가 위로 빨려 올라가는 문제.
+* **해결 방법**: 하단 고정 UI 요소들(버튼, 그립)을 별도의 `bottom_widget(고정 높이 45px)`으로 묶고, 상단 확장 영역은 `addStretch()`를 통해 여유 공간으로 처리하여 전체 높이가 변하더라도 하단 컨트롤 버튼들의 위치가 절대로 이탈하지 않게 Layout을 분리 설계했습니다.
