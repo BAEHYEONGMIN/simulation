@@ -1,6 +1,7 @@
 # --- Google Drive Link (Symbolic Link / Junction) ---
 doro/
 drive_images/
+doro
 
 # --- Python ---
 __pycache__/
