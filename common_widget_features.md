@@ -71,6 +71,29 @@ def toggle_ontop(self, is_checked):
 2. **Local HTTP Server 모듈화**: `file://` 로드 시 발생하는 CORS 및 보안 제약을 우회하기 위해, 파이썬 내장 `http.server`를 백그라운드 데몬 스레드로 띄움 (자동 포트 `0` 할당).
 3. **Chromium 플래그**: 미디어 자동 재생 등을 위해 `QTWEBENGINE_CHROMIUM_FLAGS` 환경 변수에 `--autoplay-policy=no-user-gesture-required` 옵션 부여.
 
+## 6. 멀티 모니터(듀얼 모니터) 좌표 대응
+위젯이 보조 모니터 영역까지 자유롭게 드나들게 하려면 단일 스크린 해상도가 아닌 '가상 데스크탑' 해상도를 사용해야 합니다.
+
+```python
+# 모든 모니터를 포함하는 전체 가상 영역 좌표 가져오기
+virtual_screen = QApplication.primaryScreen().virtualGeometry()
+min_x = virtual_screen.left()
+max_x = virtual_screen.right()
+```
+
+## 7. PyInstaller 단일 파일 빌드 시 리소스 로드 패턴
+이미지나 설정 파일을 실행 파일 내부에 포함시킬 때 절대 경로를 동적으로 찾는 패턴입니다.
+
+```python
+def resource_path(relative_path):
+    try:
+        # PyInstaller가 임시 폴더를 생성하고 그 경로를 _MEIPASS에 저장함
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+```
+
 ---
 
 ### 💡 요약: "위젯 코어(Widget Core)" 클래스 분리 제안

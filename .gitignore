@@ -1,20 +1,43 @@
-# Byte-compiled / optimized / DLL files
+# --- Google Drive Link (Symbolic Link / Junction) ---
+doro/
+drive_images/
+
+# --- Python ---
 __pycache__/
 *.py[cod]
 *$py.class
-
-# PyInstaller build and spec files
+*.so
+.Python
+env/
 build/
+develop-eggs/
 dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# --- PyInstaller ---
+#  Usually these go into build/ and dist/
 *.spec
 
-# Virtual environments
-venv/
-env/
-.env
+# --- IDEs / Editors ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
 
-# OS and Executable files
-*.exe
+# --- OS Specific ---
 .DS_Store
 .DS_Store?
 ._*
@@ -23,11 +46,26 @@ env/
 ehthumbs.db
 Thumbs.db
 
-# IDEs and Editors
-.vscode/
-.idea/
-*.swp
-*.swo
+# --- Large / Temp Files ---
+*.log
+*.tmp
+*.bak
+*.exe
+*.dll
+*.so
+*.dylib
+*.msi
+*.zip
+*.tar.gz
+*.rar
+*.7z
 
-# Lively Wallpaper specific (optional if you don't track lively configs)
-# LivelyInfo.json
+# --- Media (Large dataset images, if not intended for repo) ---
+# ※ 만약 유튜브 위젯의 icon.png 같은 소량 필수 리소스는 따로 관리해주세요.
+# *.png
+# *.jpg
+# *.jpeg
+# *.gif
+# *.mp4
+# *.wav
+# *.mp3
