@@ -31,11 +31,16 @@ class DesktopPet(QWidget):
         self.pet_height = 100
         self.resize(self.pet_width, self.pet_height)
 
-        # 시작 위치 (화면 중앙쯤)
-        screen = QApplication.primaryScreen().geometry()
-        self.screen_width = screen.width()
-        self.screen_height = screen.height()
-        self.x = self.screen_width // 2
+        # 시작 위치 (전체 모니터 가상 바탕화면 기준 중앙쯤)
+        virtual_screen = QApplication.primaryScreen().virtualGeometry()
+        self.min_x = virtual_screen.left()
+        self.max_x = virtual_screen.right()
+        
+        # Y축 바닥은 주 모니터 해상도 기준으로 통일 (모니터마다 높이가 다를 수 있으므로)
+        primary_screen = QApplication.primaryScreen().geometry()
+        self.screen_height = primary_screen.height()
+        
+        self.x = (self.min_x + self.max_x) // 2
         self.y = self.screen_height - self.pet_height - 50 # 바닥 근처
         self.move(self.x, self.y)
 
@@ -156,14 +161,14 @@ class DesktopPet(QWidget):
         self.x += self.speed_x
         self.y += self.speed_y
 
-        # 화면 밖으로 나가면 방향 전환 (반전)
+        # 화면(멀티모니터 전체 가상영역) 밖으로 나가면 방향 전환 (반전)
         changed_direction = False
-        if self.x <= 0:
-            self.x = 0
+        if self.x <= self.min_x:
+            self.x = self.min_x
             self.speed_x = abs(self.speed_x)
             changed_direction = True
-        elif self.x >= self.screen_width - self.pet_width:
-            self.x = self.screen_width - self.pet_width
+        elif self.x >= self.max_x - self.pet_width:
+            self.x = self.max_x - self.pet_width
             self.speed_x = -abs(self.speed_x)
             changed_direction = True
 
