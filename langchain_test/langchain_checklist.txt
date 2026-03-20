@@ -1,0 +1,519 @@
+핵심 기능 목록
+
+채팅 히스토리 주입 (Conversation Memory)
+
+대화 요약 메모리 (Summarization Memory)
+
+사용자 프로필 추출 (User Profiling)
+
+감정/의도/메타 태깅 (Message Analysis)
+
+대화 로그 기반 RAG (Conversation RAG)
+
+외부 문서 결합 RAG (Hybrid RAG)
+
+툴 호출 기반 챗봇 (Tool Calling / Function Calling)
+
+에이전트 기반 자동 의사결정 (Agent Workflow)
+
+멀티스텝 파이프라인 (LLM Workflow Orchestration)
+
+운영/품질 분석 자동화 (Conversation Analytics)
+
+보조/확장 기능
+
+세션 단위 요약 저장 (Session Summaries)
+
+장기 기억 저장 (Long-term Memory Store)
+
+메시지 벡터화 및 검색 (Embedding + Vector Search)
+
+대화 기반 추천/개인화 (Personalization)
+
+캐릭터 일관성 유지 (Persona Consistency Control)
+
+금칙어/위험도 필터링 (Moderation & Safety)
+
+대화 리플레이 및 회고 분석 (Conversation Replay & Review)
+
+[system prompt]
+
+[response policy]
+
+[character prompt]
+
+[user memory (optional)]
+
+[session summary (optional)]
+
+[recent conversation history]
+
+[retrieved context (optional)]
+
+[user input]
+
+
+
+
+좋다. 지금까지 얘기한 걸 **실제로 구현 가능한 수준의 설계 문서**로 깔끔하게 정리해줄게.
+읽고 바로 개발 들어갈 수 있게 구성했다.
+
+---
+
+# 📌 LLM + Supabase + Memory/RAG 설계 문서
+
+---
+
+# 1. 전체 아키텍처 개요
+
+## 기본 흐름
+
+```
+사용자 입력
+   ↓
+(1) 최근 대화 조회 + 요약 조회 + 장기 기억 조회
+   ↓
+(2) 프롬프트 구성
+   ↓
+(3) LLM 응답 생성
+   ↓
+(4) 응답 반환
+   ↓
+(5) 비동기 후처리
+      ├─ 대화 저장
+      ├─ 세션 요약 갱신
+      └─ 장기 기억 추출
+```
+
+---
+
+## 핵심 구성 요소
+
+| 구성                      | 역할       |
+| ----------------------- | -------- |
+| chat_messages           | 원본 대화 저장 |
+| conversation_summaries  | 세션 요약    |
+| user_memories           | 장기 기억    |
+| vector store (Supabase) | RAG 검색   |
+| LangChain               | 파이프라인 관리 |
+
+---
+
+# 2. 프롬프트 구조
+
+현재:
+
+```
+시스템 프롬프트
++ 캐릭터 프롬프트
++ 사용자 입력
+```
+
+확장 구조:
+
+```
+시스템
++ 캐릭터
++ 장기 기억 (top N)
++ 관련 RAG 결과
++ 최근 대화
++ 사용자 입력
+```
+
+---
+
+# 3. Memory 구조 설계
+
+## memory_type 정의
+
+```text
+profile       → 사용자 기본 정보
+style         → 말투/응답 방식
+preference    → 취향
+taboo         → 금기/싫어하는 것
+relationship  → 캐릭터 관계
+fact          → 기타 사실
+```
+
+---
+
+## memory_key 예시
+
+```text
+profile:
+  - user_name
+
+style:
+  - preferred_speech_style
+
+preference:
+  - favorite_genre
+
+taboo:
+  - disliked_topic
+
+relationship:
+  - attitude_to_character
+
+fact:
+  - current_activity
+```
+
+---
+
+## canonical value 예시
+
+```text
+preferred_speech_style:
+  - polite
+  - casual
+
+favorite_genre:
+  - fantasy
+  - sci_fi
+
+disliked_topic:
+  - politics
+```
+
+---
+
+# 4. Memory 추출 파이프라인
+
+## 전체 흐름
+
+```
+대화 블록 (3~10턴)
+   ↓
+(1) 후보 문장 추출
+   ↓
+(2) LLM 구조화 추출
+   ↓
+(3) 정규화
+   ↓
+(4) 기존 memory와 비교
+   ↓
+(5) INSERT / UPDATE
+```
+
+---
+
+## LLM 출력 예시
+
+```json
+{
+  "is_memory_worthy": true,
+  "memory_type": "preference",
+  "memory_key": "favorite_genre",
+  "memory_value": "fantasy",
+  "confidence": 0.75
+}
+```
+
+---
+
+# 5. importance / confidence 설계
+
+## importance (중요도)
+
+백엔드 규칙 기반:
+
+| type         | 점수 |
+| ------------ | -- |
+| profile      | 9  |
+| taboo        | 9  |
+| style        | 8  |
+| relationship | 7  |
+| preference   | 6  |
+| fact         | 5  |
+
+---
+
+## confidence (신뢰도)
+
+| 상황     | 값        |
+| ------ | -------- |
+| 명시적 진술 | 0.9      |
+| 반복 확인  | 0.9~0.95 |
+| 추론     | 0.6~0.7  |
+| 애매함    | 0.4      |
+
+---
+
+## 업데이트 규칙
+
+```sql
+confidence = min(0.95, confidence + 0.1)
+evidence_count += 1
+```
+
+---
+
+# 6. 반복 감지 전략
+
+## 핵심 원칙
+
+❌ 원문 LIKE 검색
+⭕ 정규화된 key/value 비교
+
+---
+
+## 방식
+
+1. LLM이 memory 후보 생성
+2. canonical value로 정규화
+3. DB에서 동일 key/value 검색
+4. 존재하면 update
+
+---
+
+# 7. RAG 구조
+
+## 사용 대상
+
+* 세션 요약
+* 장기 기억
+* 문서 데이터
+
+---
+
+## 저장 단위
+
+추천:
+
+* 요약문
+* memory 문장
+* chunked conversation
+
+---
+
+## 검색 흐름
+
+```
+질문
+  ↓
+vector search
+  ↓
+관련 문서 top-k
+  ↓
+프롬프트 삽입
+```
+
+---
+
+# 8. 처리 타이밍
+
+## 실시간 처리 ❌
+
+* 응답 느려짐
+
+## 추천 구조 ⭕
+
+### A. 응답 후 비동기
+
+* memory 추출
+* 요약 갱신
+
+### B. 턴 묶음 처리
+
+* 3~10턴 단위
+
+---
+
+# 9. LangChain 역할
+
+LangChain은:
+
+❌ 모델
+⭕ 파이프라인/인터페이스
+
+---
+
+## 핵심 기능
+
+* VectorStore 연결
+* Retriever
+* Prompt 구성
+* LLM 호출
+
+---
+
+## OpenAI API 형식
+
+* 사실상 업계 표준
+* vLLM / LM Studio / Ollama 호환
+
+---
+
+# 10. 전체 구조 요약
+
+```
+[Frontend]
+   ↓
+[Backend]
+   ├─ DB 조회
+   ├─ Prompt 생성
+   ├─ LLM 호출 (LangChain)
+   ├─ 응답 반환
+   └─ 비동기 처리
+         ├─ 요약 생성
+         └─ memory 추출
+
+[Supabase]
+   ├─ chat_messages
+   ├─ conversation_summaries
+   ├─ user_memories
+   └─ vector store
+```
+
+---
+
+# 📌 테이블 스키마
+
+이제 중요한 부분이다.
+실제로 쓸 수 있는 구조만 정리한다.
+
+---
+
+# 1. chat_messages (이미 있음, 보완)
+
+```sql
+create table chat_messages (
+  id bigserial primary key,
+  conf_uid text not null,
+  history_uid text not null,
+  role text not null,
+  content text not null,
+  name text,
+  avatar text,
+  created_at timestamptz default now()
+);
+
+create index idx_history
+on chat_messages (conf_uid, history_uid);
+
+create index idx_created_at
+on chat_messages (created_at desc);
+```
+
+---
+
+# 2. conversation_summaries
+
+```sql
+create table conversation_summaries (
+  id bigserial primary key,
+  conf_uid text not null,
+  history_uid text not null,
+
+  summary text not null,
+  summary_type text default 'rolling', -- rolling / final
+
+  start_message_id bigint,
+  end_message_id bigint,
+
+  message_count int,
+
+  created_at timestamptz default now()
+);
+
+create index idx_conv_summary
+on conversation_summaries (conf_uid, history_uid, created_at desc);
+```
+
+---
+
+# 3. user_memories (핵심)
+
+```sql
+create table user_memories (
+  id bigserial primary key,
+
+  user_id text not null,
+  conf_uid text not null,
+
+  memory_type text not null,
+  memory_key text not null,
+  memory_value text not null,
+
+  importance int default 5,
+  confidence float default 0.7,
+
+  evidence_count int default 1,
+
+  status text default 'active', -- active / archived
+
+  created_at timestamptz default now(),
+  updated_at timestamptz default now(),
+  last_seen_at timestamptz default now()
+);
+
+create index idx_user_memory
+on user_memories (user_id, conf_uid, memory_type, importance desc);
+```
+
+---
+
+# 4. vector store (documents)
+
+```sql
+create table documents (
+  id bigserial primary key,
+
+  content text,
+  metadata jsonb,
+
+  embedding vector(1536)
+);
+```
+
+---
+
+# 5. similarity search 함수 (Supabase)
+
+```sql
+create or replace function match_documents (
+  query_embedding vector(1536),
+  match_count int
+)
+returns table (
+  id bigint,
+  content text,
+  metadata jsonb,
+  similarity float
+)
+language sql
+as $$
+  select
+    id,
+    content,
+    metadata,
+    1 - (embedding <=> query_embedding) as similarity
+  from documents
+  order by embedding <=> query_embedding
+  limit match_count;
+$$;
+```
+
+---
+
+# 마지막 정리
+
+너 지금 설계 방향 정확하다.
+
+핵심만 다시 박아준다:
+
+👉 요약 = 압축
+👉 memory = 구조화된 정보 추출
+👉 RAG = 과거 정보 검색
+👉 LangChain = 연결/파이프라인
+
+그리고 진짜 중요한 한 줄:
+
+👉 **“원문이 아니라 구조화된 memory를 기준으로 시스템을 설계해야 한다”**
+
+---
+
+원하면 다음 단계로
+👉 “이걸 실제 서비스 코드 구조 (controller/service/worker)로 쪼개서”
+현업 수준으로 설계해줄게.

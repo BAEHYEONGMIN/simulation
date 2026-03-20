@@ -1,0 +1,268 @@
+좋다. 이건 그냥 코드가 아니라 **설계 문서로 쓸 수 있게 깔끔하게 정리해줄게.**
+(길이 제한, 실제 운영 기준까지 반영)
+
+---
+
+# 📘 Chatbot DB 설계 문서 (최종 패치 포함)
+
+## 📌 개요
+
+본 스키마는 다음 기능을 지원한다:
+
+* 다중 화자 채팅
+* 캐릭터 기반 응답
+* 세션 요약 (rolling memory)
+* 장기 기억 (user memory)
+* RAG (벡터 검색)
+
+---
+
+# 🗂️ 스키마 구조
+
+```
+chatbot
+ ├── chat_messages
+ ├── conversation_summaries
+ ├── user_memories
+ ├── documents
+ └── match_documents()  (function)
+```
+
+---
+
+# 1. 📄 chat_messages
+
+### 역할
+
+원본 대화 로그 저장 (핵심 테이블)
+
+---
+
+## 컬럼 정의
+
+| 컬럼명                 | 타입           | 제약            | 설명                               |
+| ------------------- | ------------ | ------------- | -------------------------------- |
+| id                  | bigserial    | PK            | 메시지 ID                           |
+| conf_uid            | varchar(50)  | NOT NULL      | 캐릭터/설정 그룹                        |
+| history_uid         | varchar(64)  | NOT NULL      | 세션 ID                            |
+| role                | char(6)      | NOT NULL      | system / human / ai / tool       |
+| speaker_type        | char(10)     | NOT NULL      | user / character / system / tool |
+| speaker_id          | varchar(64)  | NOT NULL      | 화자 고유 ID                         |
+| display_name        | varchar(100) | NULL          | 표시 이름                            |
+| content             | text         | NOT NULL      | 메시지 내용                           |
+| avatar              | text         | NULL          | 이미지 URL                          |
+| reply_to_message_id | bigint       | FK            | 응답 대상 메시지                        |
+| created_at          | timestamptz  | DEFAULT now() | 생성 시각                            |
+
+---
+
+## 설계 포인트
+
+* `role` → LLM 프롬프트용
+* `speaker_type` → 다중 화자 처리용
+* `reply_to_message_id` → 응답 관계 추적 (핵심 패치)
+
+---
+
+# 2. 📄 conversation_summaries
+
+### 역할
+
+세션 요약 저장 (토큰 절약 / 메모리 압축)
+
+---
+
+## 컬럼 정의
+
+| 컬럼명                   | 타입          | 제약                | 설명                           |
+| --------------------- | ----------- | ----------------- | ---------------------------- |
+| id                    | bigserial   | PK                | ID                           |
+| conf_uid              | varchar(50) | NOT NULL          | 캐릭터 그룹                       |
+| history_uid           | varchar(64) | NOT NULL          | 세션 ID                        |
+| summary_type          | char(10)    | DEFAULT 'rolling' | rolling / checkpoint / final |
+| summary_text          | text        | NOT NULL          | 요약 내용                        |
+| start_message_id      | bigint      | NULL              | 시작 메시지                       |
+| end_message_id        | bigint      | NULL              | 끝 메시지                        |
+| covered_message_count | int         | DEFAULT 0         | 메시지 수                        |
+| summary_seq           | int         | DEFAULT 1         | 순번                           |
+| participants          | jsonb       | DEFAULT []        | 참여자 목록                       |
+| created_at            | timestamptz | DEFAULT now()     | 생성                           |
+| updated_at            | timestamptz | DEFAULT now()     | 수정                           |
+
+---
+
+## 설계 포인트
+
+* 10턴 요약 저장용
+* RAG와 결합 가능
+* participants → 다중 화자 대응
+
+---
+
+# 3. 📄 user_memories
+
+### 역할
+
+장기 기억 저장 (LLM personalization 핵심)
+
+---
+
+## 컬럼 정의
+
+| 컬럼명                | 타입           | 제약               | 설명                                                         |
+| ------------------ | ------------ | ---------------- | ---------------------------------------------------------- |
+| id                 | bigserial    | PK               | ID                                                         |
+| conf_uid           | varchar(50)  | NOT NULL         | 캐릭터 그룹                                                     |
+| owner_speaker_id   | varchar(64)  | NOT NULL         | 기억을 사용하는 주체                                                |
+| target_speaker_id  | varchar(64)  | NOT NULL         | 기억 대상                                                      |
+| memory_type        | char(12)     | NOT NULL         | profile / style / preference / taboo / relationship / fact |
+| memory_key         | varchar(100) | NULL             | 키                                                          |
+| memory_value       | text         | NOT NULL         | 값                                                          |
+| source_history_uid | varchar(64)  | NULL             | 출처 세션                                                      |
+| source_message_id  | bigint       | NULL             | 출처 메시지                                                     |
+| importance         | int          | DEFAULT 5        | 중요도 (1~10)                                                 |
+| confidence         | numeric(4,3) | DEFAULT 0.700    | 신뢰도                                                        |
+| evidence_count     | int          | DEFAULT 1        | 반복 횟수                                                      |
+| status             | char(10)     | DEFAULT 'active' | active / archived / deleted / conflicted                   |
+| first_seen_at      | timestamptz  | DEFAULT now()    | 최초                                                         |
+| last_seen_at       | timestamptz  | DEFAULT now()    | 최근                                                         |
+| last_accessed_at   | timestamptz  | NULL             | 사용                                                         |
+| access_count       | int          | DEFAULT 0        | 사용 횟수                                                      |
+| created_at         | timestamptz  | DEFAULT now()    | 생성                                                         |
+| updated_at         | timestamptz  | DEFAULT now()    | 수정                                                         |
+
+---
+
+## 설계 포인트
+
+* owner / target 분리 → 다중 화자 핵심
+* confidence + evidence_count → 자동 신뢰도 관리
+* status → soft delete / 충돌 관리
+
+---
+
+# 4. 📄 documents
+
+### 역할
+
+RAG / 벡터 검색용 문서
+
+---
+
+## 컬럼 정의
+
+| 컬럼명        | 타입           | 제약            | 설명   |
+| ---------- | ------------ | ------------- | ---- |
+| id         | bigserial    | PK            | ID   |
+| content    | text         | NOT NULL      | 문서   |
+| metadata   | jsonb        | DEFAULT {}    | 메타정보 |
+| embedding  | vector(1536) | NULL          | 임베딩  |
+| created_at | timestamptz  | DEFAULT now() | 생성   |
+
+---
+
+## 설계 포인트
+
+* OpenAI embedding 기준 1536
+* metadata 필터 지원
+
+---
+
+# 5. ⚙️ match_documents (Function)
+
+### 역할
+
+벡터 유사도 검색
+
+---
+
+## 입력
+
+| 파라미터            | 타입           |
+| --------------- | ------------ |
+| query_embedding | vector(1536) |
+| match_count     | int          |
+| filter          | jsonb        |
+
+---
+
+## 반환
+
+| 컬럼명        | 타입     |
+| ---------- | ------ |
+| id         | bigint |
+| content    | text   |
+| metadata   | jsonb  |
+| similarity | float  |
+
+---
+
+# ⚙️ 공통 트리거
+
+## set_updated_at()
+
+```sql
+before update → updated_at 자동 갱신
+```
+
+적용 테이블:
+
+* conversation_summaries
+* user_memories
+
+---
+
+# 🧠 전체 구조 흐름
+
+```
+[chat_messages]
+   ↓
+[conversation_summaries]
+   ↓
+[user_memories]
+   ↓
+[LLM prompt 구성]
+   ↓
+[RAG → documents]
+```
+
+---
+
+# 🎯 핵심 설계 포인트 요약
+
+## 1. 다중 화자 대응
+
+* speaker_id + speaker_type
+* owner / target memory 구조
+
+## 2. 응답 관계 추적
+
+* reply_to_message_id (핵심 패치)
+
+## 3. 메모리 구조 분리
+
+* short-term → summaries
+* long-term → user_memories
+
+## 4. 확장성
+
+* RAG (documents)
+* vector search
+* agent 확장 가능
+
+---
+
+# ✅ 결론
+
+이 구조는:
+
+* 단순 챗봇 ❌
+* **멀티유저 + 캐릭터 + 장기기억 + RAG 시스템 ⭕**
+
+까지 커버하는 구조다.
+
+---
+
+원하면 다음 단계로
+👉 “이 DB를 실제 LLM 프롬프트로 조립하는 구조 (진짜 핵심)”
+이걸 코드 레벨까지 깔끔하게 정리해줄게.
