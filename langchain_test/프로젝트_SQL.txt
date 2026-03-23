@@ -794,3 +794,8 @@ $$;
 -- 5. 권한 부여 (기존 SQL 파일과 동일한 권한 구조 적용)
 grant all on chatbot.documents_gemini to anon, authenticated, service_role;
 grant all on chatbot.documents_gemini_id_seq to anon, authenticated, service_role;
+
+
+
+
+ALTER TABLE chatbot.chat_messages ADD COLUMN metadata jsonb DEFAULT '{}'::jsonb;
