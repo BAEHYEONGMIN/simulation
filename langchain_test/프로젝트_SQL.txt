@@ -1,0 +1,796 @@
+-- =========================================================
+-- 0. schema / extension
+-- =========================================================
+create schema if not exists chatbot;
+
+create extension if not exists vector;
+
+-- =========================================================
+-- 1. updated_at trigger function
+-- =========================================================
+create or replace function chatbot.set_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+-- =========================================================
+-- 2. chat_messages
+-- 원본 대화 로그 (다중 화자 대응)
+-- =========================================================
+create table if not exists chatbot.chat_messages (
+  id bigserial not null,
+
+  conf_uid text not null,
+  history_uid text not null,
+
+  -- 메시지 역할
+  role text not null,
+
+  -- 실제 발화자 구분
+  speaker_type text not null,
+  speaker_id text not null,
+  display_name text null,
+
+  content text not null,
+  avatar text null,
+
+  created_at timestamptz not null default now(),
+
+  constraint chat_messages_pkey primary key (id),
+
+  constraint chat_messages_role_check
+    check (role in ('system', 'human', 'ai', 'tool')),
+
+  constraint chat_messages_speaker_type_check
+    check (speaker_type in ('user', 'character', 'system', 'tool'))
+);
+
+create index if not exists idx_chat_messages_history
+  on chatbot.chat_messages (conf_uid, history_uid);
+
+create index if not exists idx_chat_messages_history_created
+  on chatbot.chat_messages (conf_uid, history_uid, created_at desc);
+
+create index if not exists idx_chat_messages_speaker
+  on chatbot.chat_messages (speaker_id, created_at desc);
+
+create index if not exists idx_chat_messages_created_at
+  on chatbot.chat_messages (created_at desc);
+
+-- =========================================================
+-- 3. conversation_summaries
+-- 세션 요약 저장
+-- =========================================================
+create table if not exists chatbot.conversation_summaries (
+  id bigserial not null,
+
+  conf_uid text not null,
+  history_uid text not null,
+
+  summary_type text not null default 'rolling',
+  summary_text text not null,
+
+  start_message_id bigint null,
+  end_message_id bigint null,
+
+  covered_message_count integer not null default 0,
+  summary_seq integer not null default 1,
+
+  -- 참여자 목록
+  participants jsonb not null default '[]'::jsonb,
+
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+
+  constraint conversation_summaries_pkey primary key (id),
+
+  constraint conversation_summaries_summary_type_check
+    check (summary_type in ('rolling', 'checkpoint', 'final'))
+);
+
+create index if not exists idx_conversation_summaries_session
+  on chatbot.conversation_summaries (conf_uid, history_uid, summary_seq desc);
+
+create index if not exists idx_conversation_summaries_range
+  on chatbot.conversation_summaries (conf_uid, history_uid, end_message_id desc);
+
+create index if not exists idx_conversation_summaries_created
+  on chatbot.conversation_summaries (created_at desc);
+
+create index if not exists idx_conversation_summaries_participants_gin
+  on chatbot.conversation_summaries
+  using gin (participants);
+
+drop trigger if exists trg_conversation_summaries_updated_at on chatbot.conversation_summaries;
+create trigger trg_conversation_summaries_updated_at
+before update on chatbot.conversation_summaries
+for each row
+execute function chatbot.set_updated_at();
+
+-- =========================================================
+-- 4. user_memories
+-- 장기 기억 저장
+-- 다중 화자 대응:
+-- owner_speaker_id  : 이 기억을 보유/사용하는 주체
+-- target_speaker_id : 이 기억이 가리키는 대상 화자
+-- =========================================================
+create table if not exists chatbot.user_memories (
+  id bigserial not null,
+
+  conf_uid text not null,
+
+  owner_speaker_id text not null,
+  target_speaker_id text not null,
+
+  memory_type text not null,
+  memory_key text null,
+  memory_value text not null,
+
+  source_history_uid text null,
+  source_message_id bigint null,
+
+  importance integer not null default 5,
+  confidence numeric(4,3) not null default 0.700,
+  evidence_count integer not null default 1,
+
+  status text not null default 'active',
+
+  first_seen_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now(),
+  last_accessed_at timestamptz null,
+  access_count integer not null default 0,
+
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+
+  constraint user_memories_pkey primary key (id),
+
+  constraint user_memories_importance_check
+    check (importance between 1 and 10),
+
+  constraint user_memories_confidence_check
+    check (confidence >= 0 and confidence <= 1),
+
+  constraint user_memories_status_check
+    check (status in ('active', 'archived', 'deleted', 'conflicted')),
+
+  constraint user_memories_memory_type_check
+    check (memory_type in ('profile', 'style', 'preference', 'taboo', 'relationship', 'fact'))
+);
+
+create index if not exists idx_user_memories_owner_target
+  on chatbot.user_memories (conf_uid, owner_speaker_id, target_speaker_id);
+
+create index if not exists idx_user_memories_lookup
+  on chatbot.user_memories (owner_speaker_id, target_speaker_id, memory_type, importance desc);
+
+create index if not exists idx_user_memories_active
+  on chatbot.user_memories (owner_speaker_id, target_speaker_id, status, last_seen_at desc);
+
+create index if not exists idx_user_memories_source
+  on chatbot.user_memories (source_history_uid, source_message_id);
+
+create unique index if not exists uq_user_memories_key
+  on chatbot.user_memories (
+    conf_uid,
+    owner_speaker_id,
+    target_speaker_id,
+    memory_type,
+    memory_key
+  )
+  where status = 'active' and memory_key is not null;
+
+drop trigger if exists trg_user_memories_updated_at on chatbot.user_memories;
+create trigger trg_user_memories_updated_at
+before update on chatbot.user_memories
+for each row
+execute function chatbot.set_updated_at();
+
+-- =========================================================
+-- 5. documents
+-- RAG / vector search용 문서
+-- OpenAI text-embedding-3-small 기준 1536 차원
+-- =========================================================
+create table if not exists chatbot.documents (
+  id bigserial not null,
+
+  content text not null,
+  metadata jsonb not null default '{}'::jsonb,
+  embedding vector(1536) null,
+
+  created_at timestamptz not null default now(),
+
+  constraint documents_pkey primary key (id)
+);
+
+create index if not exists idx_documents_created_at
+  on chatbot.documents (created_at desc);
+
+create index if not exists idx_documents_metadata_gin
+  on chatbot.documents
+  using gin (metadata);
+
+create index if not exists idx_documents_embedding
+  on chatbot.documents
+  using ivfflat (embedding vector_cosine_ops)
+  with (lists = 100);
+
+-- =========================================================
+-- 6. vector search function
+-- metadata filter 지원
+-- =========================================================
+create or replace function chatbot.match_documents (
+  query_embedding vector(1536),
+  match_count int default 5,
+  filter jsonb default '{}'::jsonb
+)
+returns table (
+  id bigint,
+  content text,
+  metadata jsonb,
+  similarity float
+)
+language plpgsql
+as $$
+begin
+  return query
+  select
+    d.id,
+    d.content,
+    d.metadata,
+    1 - (d.embedding <=> query_embedding) as similarity
+  from chatbot.documents d
+  where d.metadata @> filter
+  order by d.embedding <=> query_embedding
+  limit match_count;
+end;
+$$;
+
+
+
+alter table chatbot.chat_messages
+add column if not exists reply_to_message_id bigint null;
+
+alter table chatbot.chat_messages
+add constraint chat_messages_reply_to_fkey
+foreign key (reply_to_message_id)
+references chatbot.chat_messages (id)
+on delete set null;
+
+create index if not exists idx_chat_messages_reply_to
+  on chatbot.chat_messages (reply_to_message_id);
+
+
+-- ========================================================
+-- 초기화
+-- ========================================================
+delete from chatbot.documents;
+delete from chatbot.user_memories;
+delete from chatbot.conversation_summaries;
+delete from chatbot.chat_messages;
+
+
+-- =========================================================
+-- SAMPLE DATA 1: chat_messages
+-- =========================================================
+
+insert into chatbot.chat_messages (
+  conf_uid,
+  history_uid,
+  role,
+  speaker_type,
+  speaker_id,
+  display_name,
+  content,
+  avatar,
+  reply_to_message_id,
+  created_at
+) values
+-- session 001
+(
+  'sua_test_002',
+  'session_001',
+  'human',
+  'user',
+  'user_baemin',
+  '배민',
+  '안녕하세요. 제 이름은 배민입니다.',
+  null,
+  null,
+  now() - interval '20 minutes'
+),
+(
+  'sua_test_002',
+  'session_001',
+  'ai',
+  'character',
+  'char_sua',
+  '수아',
+  '[neutral] 처음 뵙는군요, 배민님. 예의를 지키신다면 대화는 순조로울 겁니다.',
+  null,
+  1,
+  now() - interval '19 minutes 50 seconds'
+),
+(
+  'sua_test_002',
+  'session_001',
+  'human',
+  'user',
+  'user_baemin',
+  '배민',
+  '앞으로는 존댓말로 이야기해 주세요.',
+  null,
+  null,
+  now() - interval '19 minutes'
+),
+(
+  'sua_test_002',
+  'session_001',
+  'ai',
+  'character',
+  'char_sua',
+  '수아',
+  '[neutral] 알겠습니다. 앞으로 존댓말로 응대하겠습니다.',
+  null,
+  3,
+  now() - interval '18 minutes 50 seconds'
+),
+(
+  'sua_test_002',
+  'session_001',
+  'human',
+  'user',
+  'user_baemin',
+  '배민',
+  '저는 판타지 장르를 좋아해요. 특히 중세풍 세계관이 좋더라고요.',
+  null,
+  null,
+  now() - interval '18 minutes'
+),
+(
+  'sua_test_002',
+  'session_001',
+  'ai',
+  'character',
+  'char_sua',
+  '수아',
+  '[smirk] 판타지 취향이라. 제법 뻔하지만, 나쁘진 않군요.',
+  null,
+  5,
+  now() - interval '17 minutes 50 seconds'
+),
+(
+  'sua_test_002',
+  'session_001',
+  'human',
+  'user',
+  'user_baemin',
+  '배민',
+  '정치 이야기는 별로 안 좋아합니다.',
+  null,
+  null,
+  now() - interval '17 minutes'
+),
+(
+  'sua_test_002',
+  'session_001',
+  'ai',
+  'character',
+  'char_sua',
+  '수아',
+  '[neutral] 그렇군요. 앞으로 정치 이야기는 피하는 편이 좋겠네요.',
+  null,
+  7,
+  now() - interval '16 minutes 50 seconds'
+),
+
+-- session 002 (다중 화자 예시)
+(
+  'sua_test_002',
+  'session_002',
+  'human',
+  'user',
+  'user_baemin',
+  '배민',
+  '오늘도 안녕하세요.',
+  null,
+  null,
+  now() - interval '10 minutes'
+),
+(
+  'sua_test_002',
+  'session_002',
+  'human',
+  'user',
+  'user_doom',
+  '종말론자',
+  '저도 왔습니다.',
+  null,
+  null,
+  now() - interval '9 minutes 50 seconds'
+),
+(
+  'sua_test_002',
+  'session_002',
+  'ai',
+  'character',
+  'char_sua',
+  '수아',
+  '[neutral] 두 분 다 오셨군요. 오늘은 무슨 용건이신가요?',
+  null,
+  10,
+  now() - interval '9 minutes 40 seconds'
+),
+(
+  'sua_test_002',
+  'session_002',
+  'human',
+  'user',
+  'user_doom',
+  '종말론자',
+  '자기소개를 다시 해보시죠.',
+  null,
+  null,
+  now() - interval '9 minutes'
+),
+(
+  'sua_test_002',
+  'session_002',
+  'ai',
+  'character',
+  'char_sua',
+  '수아',
+  '[smirk] 명령조는 삼가시죠. 저는 수아입니다.',
+  null,
+  12,
+  now() - interval '8 minutes 50 seconds'
+);
+
+-- =========================================================
+-- SAMPLE DATA 2: conversation_summaries
+-- =========================================================
+
+insert into chatbot.conversation_summaries (
+  conf_uid,
+  history_uid,
+  summary_type,
+  summary_text,
+  start_message_id,
+  end_message_id,
+  covered_message_count,
+  summary_seq,
+  participants,
+  created_at,
+  updated_at
+) values
+(
+  'sua_test_002',
+  'session_001',
+  'rolling',
+  '배민은 자신의 이름을 밝혔고, 앞으로 존댓말을 사용해 달라고 요청했다. 또한 판타지 장르, 특히 중세풍 세계관을 선호하며 정치 이야기는 싫어한다고 말했다. 수아는 이에 맞춰 공손하게 응대했다.',
+  1,
+  8,
+  8,
+  1,
+  '["user_baemin", "char_sua"]'::jsonb,
+  now() - interval '15 minutes',
+  now() - interval '15 minutes'
+),
+(
+  'sua_test_002',
+  'session_002',
+  'rolling',
+  '배민과 종말론자가 함께 대화에 참여했다. 수아는 두 사람 모두에게 응답했으며, 종말론자의 명령조 발화에 약간 비꼬는 태도를 보였다.',
+  9,
+  13,
+  5,
+  1,
+  '["user_baemin", "user_doom", "char_sua"]'::jsonb,
+  now() - interval '7 minutes',
+  now() - interval '7 minutes'
+);
+
+-- =========================================================
+-- SAMPLE DATA 3: user_memories
+-- =========================================================
+
+insert into chatbot.user_memories (
+  conf_uid,
+  owner_speaker_id,
+  target_speaker_id,
+  memory_type,
+  memory_key,
+  memory_value,
+  source_history_uid,
+  source_message_id,
+  importance,
+  confidence,
+  evidence_count,
+  status,
+  first_seen_at,
+  last_seen_at,
+  created_at,
+  updated_at
+) values
+(
+  'sua_test_002',
+  'char_sua',
+  'user_baemin',
+  'profile',
+  'user_name',
+  '배민',
+  'session_001',
+  1,
+  9,
+  0.950,
+  1,
+  'active',
+  now() - interval '20 minutes',
+  now() - interval '20 minutes',
+  now() - interval '20 minutes',
+  now() - interval '20 minutes'
+),
+(
+  'sua_test_002',
+  'char_sua',
+  'user_baemin',
+  'style',
+  'preferred_speech_style',
+  'polite',
+  'session_001',
+  3,
+  8,
+  0.980,
+  2,
+  'active',
+  now() - interval '19 minutes',
+  now() - interval '19 minutes',
+  now() - interval '19 minutes',
+  now() - interval '19 minutes'
+),
+(
+  'sua_test_002',
+  'char_sua',
+  'user_baemin',
+  'preference',
+  'favorite_genre',
+  'fantasy',
+  'session_001',
+  5,
+  6,
+  0.820,
+  1,
+  'active',
+  now() - interval '18 minutes',
+  now() - interval '18 minutes',
+  now() - interval '18 minutes',
+  now() - interval '18 minutes'
+),
+(
+  'sua_test_002',
+  'char_sua',
+  'user_baemin',
+  'taboo',
+  'disliked_topic',
+  'politics',
+  'session_001',
+  7,
+  9,
+  0.930,
+  1,
+  'active',
+  now() - interval '17 minutes',
+  now() - interval '17 minutes',
+  now() - interval '17 minutes',
+  now() - interval '17 minutes'
+),
+(
+  'sua_test_002',
+  'char_sua',
+  'user_doom',
+  'relationship',
+  'attitude_to_character',
+  'commanding',
+  'session_002',
+  12,
+  7,
+  0.700,
+  1,
+  'active',
+  now() - interval '9 minutes',
+  now() - interval '9 minutes',
+  now() - interval '9 minutes',
+  now() - interval '9 minutes'
+);
+
+-- =========================================================
+-- SAMPLE DATA 4: documents
+-- embedding은 나중에 LangChain/OpenAI/HF로 채움
+-- =========================================================
+
+insert into chatbot.documents (
+  content,
+  metadata,
+  embedding,
+  created_at
+) values
+(
+  '사용자 배민은 존댓말을 선호한다.',
+  jsonb_build_object(
+    'conf_uid', 'sua_test_002',
+    'history_uid', 'session_001',
+    'speaker_id', 'user_baemin',
+    'speaker_type', 'user',
+    'source_type', 'memory',
+    'memory_key', 'preferred_speech_style'
+  ),
+  null,
+  now() - interval '19 minutes'
+),
+(
+  '사용자 배민은 판타지 장르와 중세풍 세계관을 좋아한다.',
+  jsonb_build_object(
+    'conf_uid', 'sua_test_002',
+    'history_uid', 'session_001',
+    'speaker_id', 'user_baemin',
+    'speaker_type', 'user',
+    'source_type', 'memory',
+    'memory_key', 'favorite_genre'
+  ),
+  null,
+  now() - interval '18 minutes'
+),
+(
+  '사용자 배민은 정치 이야기를 싫어한다.',
+  jsonb_build_object(
+    'conf_uid', 'sua_test_002',
+    'history_uid', 'session_001',
+    'speaker_id', 'user_baemin',
+    'speaker_type', 'user',
+    'source_type', 'memory',
+    'memory_key', 'disliked_topic'
+  ),
+  null,
+  now() - interval '17 minutes'
+),
+(
+  '세션 요약: 배민은 이름을 밝혔고 존댓말 사용을 요청했으며, 판타지 장르를 선호하고 정치 이야기를 꺼린다고 말했다.',
+  jsonb_build_object(
+    'conf_uid', 'sua_test_002',
+    'history_uid', 'session_001',
+    'source_type', 'summary'
+  ),
+  null,
+  now() - interval '15 minutes'
+),
+(
+  '캐릭터 수아는 냉소적이지만 기본적으로 예의를 중시하는 말투를 사용한다.',
+  jsonb_build_object(
+    'conf_uid', 'sua_test_002',
+    'source_type', 'character_profile'
+  ),
+  null,
+  now() - interval '1 minute'
+);
+
+grant usage on schema chatbot to anon, authenticated, service_role;
+grant all on all tables in schema chatbot to anon, authenticated, service_role;
+grant all on all routines in schema chatbot to anon, authenticated, service_role;
+grant all on all sequences in schema chatbot to anon, authenticated, service_role;
+
+alter default privileges for role postgres in schema chatbot
+grant all on tables to anon, authenticated, service_role;
+
+alter default privileges for role postgres in schema chatbot
+grant all on routines to anon, authenticated, service_role;
+
+alter default privileges for role postgres in schema chatbot
+grant all on sequences to anon, authenticated, service_role;
+
+
+drop function if exists chatbot.match_documents(vector(1536), int, jsonb);
+
+drop index if exists chatbot.idx_documents_embedding;
+
+alter table chatbot.documents
+drop column if exists embedding;
+
+alter table chatbot.documents
+add column embedding vector(384);
+
+create index if not exists idx_documents_embedding
+  on chatbot.documents
+  using ivfflat (embedding vector_cosine_ops)
+  with (lists = 100);
+
+create or replace function chatbot.match_documents (
+  query_embedding vector(384),
+  match_count int default 5,
+  filter jsonb default '{}'::jsonb
+)
+returns table (
+  id bigint,
+  content text,
+  metadata jsonb,
+  similarity float
+)
+language plpgsql
+as $$
+begin
+  return query
+  select
+    d.id,
+    d.content,
+    d.metadata,
+    1 - (d.embedding <=> query_embedding) as similarity
+  from chatbot.documents d
+  where d.metadata @> filter
+  order by d.embedding <=> query_embedding
+  limit match_count;
+end;
+$$;
+
+
+
+-- =========================================================
+-- documents_gemini 테이블 생성
+-- 기존 documents(384차원) 구조와 동일, 768차원으로 변경
+-- =========================================================
+-- 1. 기존에 혹시 있다면 정리
+drop function if exists chatbot.match_documents_gemini(vector(768), int, jsonb);
+drop index if exists chatbot.idx_documents_gemini_embedding;
+drop table if exists chatbot.documents_gemini;
+-- 2. 테이블 생성 (768차원)
+create table chatbot.documents_gemini (
+  id bigserial not null,
+  content text not null,
+  metadata jsonb not null default '{}'::jsonb,
+  embedding vector(768) null,
+  created_at timestamptz not null default now(),
+  constraint documents_gemini_pkey primary key (id)
+);
+-- 3. 인덱스 생성
+create index if not exists idx_documents_gemini_created_at
+  on chatbot.documents_gemini (created_at desc);
+create index if not exists idx_documents_gemini_metadata_gin
+  on chatbot.documents_gemini
+  using gin (metadata);
+create index if not exists idx_documents_gemini_embedding
+  on chatbot.documents_gemini
+  using ivfflat (embedding vector_cosine_ops)
+  with (lists = 100);
+-- 4. 벡터 검색 함수 생성
+create or replace function chatbot.match_documents_gemini (
+  query_embedding vector(768),
+  match_count int default 5,
+  filter jsonb default '{}'::jsonb
+)
+returns table (
+  id bigint,
+  content text,
+  metadata jsonb,
+  similarity float
+)
+language plpgsql
+as $$
+begin
+  return query
+  select
+    d.id,
+    d.content,
+    d.metadata,
+    1 - (d.embedding <=> query_embedding) as similarity
+  from chatbot.documents_gemini d
+  where d.metadata @> filter
+  order by d.embedding <=> query_embedding
+  limit match_count;
+end;
+$$;
+-- 5. 권한 부여 (기존 SQL 파일과 동일한 권한 구조 적용)
+grant all on chatbot.documents_gemini to anon, authenticated, service_role;
+grant all on chatbot.documents_gemini_id_seq to anon, authenticated, service_role;
