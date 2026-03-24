@@ -42,8 +42,13 @@ DEBUG = True
 # ─── DB 상수 ─────────────────────────────────────────────────
 SCHEMA          = "chatbot"
 TABLE_CHAT      = "chat_messages"
-TABLE_DOCUMENTS = "documents_gemini"   # 768차원 (gemini-embedding-001)
+TABLE_SUMMARIES = "conversation_summaries"  # 누적 요약본 저장
+TABLE_DOCUMENTS = "documents_gemini"         # 768차원 (gemini-embedding-001)
 RPC_MATCH       = "match_documents_gemini"
+
+# 대화 요약 트리거 설정
+SUMMARY_TRIGGER_COUNT = 10  # 이 터수 만큼 쌓이면 요약 실행
+SUMMARY_BRIDGE_COUNT  = 2   # 이음새로 가져올 이전 블록 마지막 대화 수
 
 # ─── 클라이언트 초기화 ────────────────────────────────────────
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -183,7 +188,111 @@ def insert_document(
     return result.data[0]
 
 
+# ─── 요약 서비스 DB 함수 ────────────────────────────────────
+def fetch_latest_summary(conf_uid: str, history_uid: str) -> dict | None:
+    """이 세션의 가장 최신 누적 요약본을 1개 가져옵니다."""
+    result = (
+        supabase.schema(SCHEMA)
+        .table(TABLE_SUMMARIES)
+        .select("id, summary, start_message_id, end_message_id, message_count, created_at")
+        .eq("conf_uid", conf_uid)
+        .eq("history_uid", history_uid)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def fetch_messages_since(conf_uid: str, history_uid: str, after_id: int) -> list[dict]:
+    """after_id 이후로 새로 쌓인 원문 대화를 오래된 순으로 모두 반환합니다."""
+    result = (
+        supabase.schema(SCHEMA)
+        .table(TABLE_CHAT)
+        .select("id, role, speaker_id, display_name, content, created_at")
+        .eq("conf_uid", conf_uid)
+        .eq("history_uid", history_uid)
+        .gt("id", after_id)
+        .order("id", desc=False)
+        .execute()
+    )
+    return result.data or []
+
+
+def fetch_bridge_messages(conf_uid: str, history_uid: str, up_to_id: int, n: int = 2) -> list[dict]:
+    """up_to_id 이하의 마지막 n개 대화(이음새)를 반환합니다."""
+    result = (
+        supabase.schema(SCHEMA)
+        .table(TABLE_CHAT)
+        .select("id, role, display_name, content, created_at")
+        .eq("conf_uid", conf_uid)
+        .eq("history_uid", history_uid)
+        .lte("id", up_to_id)
+        .order("id", desc=True)
+        .limit(n)
+        .execute()
+    )
+    return list(reversed(result.data or []))  # 오래된 순으로 다시 납힘
+
+
+def insert_summary(
+    conf_uid: str,
+    history_uid: str,
+    summary: str,
+    start_message_id: int,
+    end_message_id: int,
+    message_count: int,
+    summary_type: str = "rolling",  # rolling | checkpoint | final
+) -> dict:
+    """conversation_summaries에 요약본을 저장합니다.
+
+    summary_type 종류:
+      - rolling    : 10턴마다 자동 생성되는 실시간 누적 요약 (현재 자동 트리거)
+      - checkpoint : 주제 급변 / 중요 약속 등 특정 이벤트 감지 시 수동으로 찍는 중간 저장점
+      - final      : "잘 자", "나중에 봐" 등 세션 종료 발언 감지 시 세션 전체를 압축하는 마무리 요약
+
+    ┌── [chat_messages.metadata vs conversation_summaries 구조 비교] ─────────────
+    │
+    │  chat_messages.metadata  (JSONB, AI 응답 저장 시에만 존재)
+    │    └─ {"retrieved_docs": [{"id": 42, "similarity": 0.88}, ...]}
+    │       • 목적: 이 AI 답변이 어느 RAG 문서를 참고했는지 추적 (감사/디버그용 로그)
+    │       • 항목: documents_gemini의 id 및 유사도 — "얼마나 이용되었는가"
+    │
+    │  conversation_summaries 테이블은 metadata JSONB 컬럼이 없습니다.
+    │  대신 이미 정형 컬럼으로 구조화됨:
+    │    └─ summary_type     : 누적 요약 종류 (rolling / checkpoint / final)
+    │    └─ start_message_id : 어느 메시지부터 요약되었는지
+    │    └─ end_message_id   : 어느 메시지까지 요약되었는지
+    │    └─ message_count    : 요약된 대화 수
+    │
+    └─────────────────────────────────────────────────────────────────────────────
+    """
+    payload = {
+        "conf_uid":         conf_uid,
+        "history_uid":      history_uid,
+        "summary":          summary,
+        "summary_type":     summary_type,
+        "start_message_id": start_message_id,
+        "end_message_id":   end_message_id,
+        "message_count":    message_count,
+        "created_at":       now_iso(),
+    }
+    result = supabase.schema(SCHEMA).table(TABLE_SUMMARIES).insert(payload).execute()
+    if not result.data:
+        raise RuntimeError(f"{TABLE_SUMMARIES} 저장 실패")
+    return result.data[0]
+
+
 # ─── 포맷 헬퍼 ───────────────────────────────────────────────
+def format_messages_for_summary(rows: list[dict]) -> str:
+    """LLM 요약 프롬프트용 포맷: [YYYY-MM-DD] 화자: 내용"""
+    return "\n".join(
+        f"[{r.get('created_at','')[:10]}] {r.get('display_name') or r.get('speaker_id')}: {r.get('content')}"
+        for r in rows
+    )
+
+
+
 def format_history(rows: list[dict]) -> str:
     """대화 이력을 LLM이 읽기 좋은 형태로 포맷합니다.
     - msg_id 제거: LLM에게 의미없는 내부 DB 키, 토큰 낭비
@@ -399,5 +508,101 @@ if __name__ == "__main__":
                 metadata={"retrieved_docs": retrieved_info} if retrieved_info else None
             )
 
+            # 8) 대화 요약 트리거 (마지막 요약 이후 10턴 쌓이면 자동 실행)
+            try:
+                trigger_summarization_if_needed(conf_uid, history_uid)
+            except Exception as e:
+                # 요약 실패해도 메인 응답 흐름은 절대 막히지 않음
+                # 다음 턴 진입 시 unprocessed >= 10 조건이 다시 충족되어 자동 재시도됨
+                print(f"[요약 실패 — 다음 턴 재시도 예정] {e}")
+
         except Exception as e:
             print(f"\n[오류] {e}\n")
+
+
+# ─── 대화 요약 서비스 ─────────────────────────────────────────
+def trigger_summarization_if_needed(conf_uid: str, history_uid: str) -> None:
+    """AI 답변 저장 직후마다 호출됨. 마지막 요약 이후 10턴이 쌓이면 요약 실행."""
+    latest_summary = fetch_latest_summary(conf_uid, history_uid)
+    last_id = latest_summary["end_message_id"] if latest_summary else 0
+
+    unprocessed = fetch_messages_since(conf_uid, history_uid, after_id=last_id)
+
+    if DEBUG:
+        print(f"[📊 요약 트리거] 마지막 요약 id={last_id}, 미처리 메시지={len(unprocessed)}개")
+
+    if len(unprocessed) < SUMMARY_TRIGGER_COUNT:
+        return  # 아직 10턴 안 쌓임
+
+    summarize_and_save(conf_uid, history_uid, latest_summary, unprocessed)
+
+
+def summarize_and_save(
+    conf_uid: str,
+    history_uid: str,
+    latest_summary: dict | None,
+    unprocessed: list[dict],
+) -> None:
+    """누적 요약을 생성하고 conversation_summaries + documents_gemini에 저장합니다."""
+
+    # 재료 1: 이전 누적 요약본
+    prev_summary_text = (
+        latest_summary["summary"] if latest_summary
+        else "(첫 번째 요약 — 이전 내용 없음)"
+    )
+    last_id = latest_summary["end_message_id"] if latest_summary else 0
+
+    # 재료 2: 이음새 대화 (이전 블록 마지막 2개 — 요약 경계의 낮 단절 방지)
+    bridge = []
+    if latest_summary:
+        bridge = fetch_bridge_messages(
+            conf_uid, history_uid,
+            up_to_id=last_id,
+            n=SUMMARY_BRIDGE_COUNT,
+        )
+
+    # 재료 3: 새로 쌓인 10개 (레이스 컨디션 방지: 정확히 TRIGGER_COUNT만 처리)
+    new_block = unprocessed[:SUMMARY_TRIGGER_COUNT]
+
+    bridge_text    = format_messages_for_summary(bridge)    if bridge    else "(없음)"
+    new_block_text = format_messages_for_summary(new_block)
+
+    summary_prompt = (
+        "다음은 카카오톡 대화 로그입니다. 키워드를 중심으로 간결하게 요약해 주세요.\n\n"
+        f"[이전 누적 요약본]\n{prev_summary_text}\n\n"
+        f"[이음새 대화 — 문맥 연결용]\n{bridge_text}\n\n"
+        f"[새로 시작된 대화]\n{new_block_text}\n\n"
+        "[출력 규칙]\n"
+        "- 불릿 포인트(-) 3~5개로만 작성할 것\n"
+        "- 중요한 화자만의 정보(신상, 취향, 특이사항)를 중심으로 할 것\n"
+        "- 인사말, 짧은 감탄사 등 무의미한 내용은 과감히 삭제할 것\n"
+        "- 한국어로만 작성할 것"
+    )
+
+    # Flash 모델로 요약 실행 (단순 압축 작업, Pro급 추론 불필요)
+    new_summary_text = llm.invoke(summary_prompt).content
+
+    if DEBUG:
+        print(f"\n[📝 누적 요약 완료]\n{new_summary_text}\n")
+
+    # 저장 1: conversation_summaries 테이블 (SQL 원본)
+    insert_summary(
+        conf_uid=conf_uid,
+        history_uid=history_uid,
+        summary=new_summary_text,
+        start_message_id=(last_id + 1) if last_id else 0,
+        end_message_id=new_block[-1]["id"],
+        message_count=len(new_block),
+    )
+
+    # 저장 2: documents_gemini 테이블 (오래된 세션 RAG 검색용 벡터화)
+    # "3달 전에 무슨 이야기했지?" 같은 질문에 과거 세션 요약본을 검색할 수 있도록 임베딩
+    summary_embedding = generate_embedding(new_summary_text)
+    insert_document(
+        conf_uid=conf_uid,
+        history_uid=history_uid,
+        speaker_id="system_summary",  # source_type 구분용
+        content=new_summary_text,
+        embedding=summary_embedding,
+        related_message_id=new_block[-1]["id"],
+    )

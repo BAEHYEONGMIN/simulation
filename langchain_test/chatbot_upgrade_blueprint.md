@@ -350,10 +350,10 @@ async def chat_endpoint(request: ChatRequest):
 
 ### Phase 2: 지능 고도화 (1순위)
 - [ ] 대화 요약 압축 서비스 구현 (`summarizer.py`)
-  - [ ] `last_processed_id` 기반 10턴 트리거
-  - [ ] 이전 요약본 + 이음새 대화 2개 + 새 블록 투입
-  - [ ] `conversation_summaries` 테이블 INSERT
-  - [ ] 프롬프트에 `[이전 요약]` 섹션 추가
+  - [x] `last_processed_id` 기반 10턴 트리거 (2026-03-24 완료)
+  - [x] 이전 요약본 + 이음새 대화 2개 + 새 블록 누적 요약 로직 (2026-03-24 완료)
+  - [x] `conversation_summaries` 테이블 INSERT + 벡터화 저장 (2026-03-24 완료)
+  - [ ] 메인 채팅 프롬프트에 `[이전 요약]` 섹션 조회 및 주입 (진행 예정)
 - [ ] 장기 기억 추출 서비스 구현 (`memory_extractor.py`)
   - [ ] Pydantic 스키마 정의 (`MemoryExtraction`)
   - [ ] `with_structured_output`으로 JSON 강제 파싱
@@ -405,3 +405,13 @@ async def chat_endpoint(request: ChatRequest):
 | D-요약 | 대화 압축 요약 | **Flash** | 단순 압축 작업, Pro급 추론 불필요 |
 | D-기억 추출 | Pydantic 구조화 파싱 | **Pro** | 뉘앙스를 읽고 정확한 Key-Value로 변환하는 정밀 추론 필요 |
 | D-저장 판단 | Document Gating | 룰 베이스 | LLM 호출 자체가 없음 |
+
+---
+
+## 🕒 성능 및 레이턴시 보정 전략 (Sync vs Async)
+
+현재 요약 서비스(`summarize_and_save`)는 답변이 끝난 직후 **동기(Synchronous)** 방식으로 실행됩니다.
+
+*   **현상:** 10번째 턴마다 약 2~4초의 추가 대기 시간이 발생함. (LLM 요약 + 임베딩 생성)
+*   **결정:** 현재는 개발 가독성과 디버깅을 위해 **현상 유지(Sync)**함.
+*   **향후 계획:** Phase 3 진입 시 `threading.Thread` 또는 FastAPI `BackgroundTasks`를 통해 비동기로 전환하여 유저 체감 대기 시간을 0으로 최적화할 예정. (checklist 참조)
