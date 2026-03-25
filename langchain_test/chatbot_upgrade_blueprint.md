@@ -29,7 +29,7 @@
 
 | #   | 한계점                                        | 영향                                                                                                               | 관련 스터디                |
 | --- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | -------------------------- |
-| 1   | **대화 이력을 단순 문자열(`\n`)로 이어 붙임** | LLM이 누가 한 말인지 구분 못하는 경우 발생. 랭체인 정품 메시지 객체(`HumanMessage`, `AIMessage`)보다 인식률 떨어짐 | 테마 12                    |
+| 1   | **대화 이력 포맷 혼재 (문자열 디버그 + 메시지 객체 주입)** | 프롬프트 주입은 `MessagesPlaceholder`로 개선 완료. 다만 일부 디버그/캐시 경로에 문자열 포맷이 공존해 포맷 일관성 관리 필요 | 테마 12                    |
 | 2   | **RunnableParallel 미적용 (현재 ThreadPoolExecutor 사용)** | 병렬 조회는 해결됐지만 LangChain 파이프라인 일관성/가독성 측면에서 목표 아키텍처와 차이 존재                      | 테마 11 (RunnableParallel) |
 | 3   | **모든 질문에 RAG 검색 수행**                 | "안녕", "잘 자" 같은 일상 대화에도 임베딩+벡터 검색을 돌림. 토큰/시간 낭비                                         | 테마 8 (Semantic Routing)  |
 | 4   | **대화가 길어지면 토큰 폭발**                 | `limit=8`로 단순 자르기만 함. 과거 대화의 맥락이 증발하여 챗봇이 '치매' 증상 보임                                  | 테마 12, checklist 항목    |
@@ -85,7 +85,7 @@
 │  │ [system] 장기 기억 (user_memories)       │ ← 신규            │
 │  │ [system] 이전 요약본 (최근 2개)          │ ← 신규            │
 │  │ [system] 검색된 문서 (RAG + created_at)  │ ← 날짜 포함       │
-│  │ [history] 최근 원문 12턴 (문자열 포맷; MessagesPlaceholder 미적용) │
+│  │ [history] 최근 원문 12턴 (MessagesPlaceholder 메시지 객체 주입)    │
 │  │ [human] 사용자 입력                      │                   │
 │  └─────────────────────────────────────────┘                   │
 │                                                                 │
@@ -553,20 +553,21 @@ async def chat_endpoint(request: ChatRequest):
   - [ ] `with_structured_output`으로 JSON 강제 파싱
   - [ ] `user_memories` 테이블 UPSERT + 충돌 해소 로직
   - [ ] 프롬프트에 `[사용자 장기 기억]` 섹션 추가
-- [ ] 시맨틱 라우팅 도입 (`routing.py`)
-  - [ ] `router_samples.json` 작성 (카테고리별 5~10개 샘플)
-  - [ ] CHITCHAT 경로: RAG 스킵, 최근 2~3턴 이력 포함하여 LLM 직발
-  - [ ] KNOWLEDGE 경로: 전체 RAG 파이프라인 가동
+- [ ] 시맨틱 라우팅 모듈 분리 (`routing.py`)
+  - [x] `router_samples.json` 작성 (카테고리별 샘플 운영 중)
+  - [x] CHITCHAT 경로: RAG 스킵, 최근 이력 포함하여 LLM 직발 (`chat_new.py` 구현 완료)
+  - [x] KNOWLEDGE 경로: 전체 RAG 파이프라인 가동 (`chat_new.py` 구현 완료)
         ~~ - [ ] DANGER 경로: 임계값 0.65, 안전 응답 리턴 ~~
 - [x] 시맨틱 라우팅 1차 적용 (`chat_new.py` 기준)
   - [x] CHITCHAT: RAG 스킵
   - [x] KNOWLEDGE: 기존 RAG 파이프라인 사용
   - [x] DANGER: 패턴 매칭 기반 최소 처리(프로토타입 계산 제외)
   - [x] DANGER 입력 문서 저장/요약 트리거 제외
+  - [x] DANGER 라우팅 플래그 기본 OFF(`ENABLE_DANGER_ROUTING = False`), 필요 시 즉시 재활성화 가능
   - [ ] 샘플별 센트로이드 프로토타입(정확도 개선) — 시작 지연/호출량 증가로 보류
 - [ ] 저장 가치 판단(Document Gating) 추가
   - [x] 룰 베이스 필터 (`is_worth_storing`) 기본 적용 (2026-03-25 완료)
-  - [ ] CHITCHAT 라우팅 결과 연계
+  - [x] CHITCHAT 라우팅 결과 연계
 - [x] 하이브리드 검색/재랭크 적용 (`chat_new.py` 기준)
   - [x] 벡터 후보 + 키워드 후보 결합 재랭크
   - [x] 12 -> 8 -> 4 검색 파이프라인 적용
@@ -627,7 +628,7 @@ async def chat_endpoint(request: ChatRequest):
 
 ### 프롬프트 구조 (정합성 보강)
 
-- [ ] `MessagesPlaceholder` 기반 메시지 객체 이력 주입 전환
+- [x] `MessagesPlaceholder` 기반 메시지 객체 이력 주입 전환
 - [ ] `RESPONSE_POLICY`/`CHARACTER_PERSONA` 파일 분리(`prompts/*.txt`) 및 앱 시작 시 1회 로딩
 
 ---

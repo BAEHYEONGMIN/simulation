@@ -32,6 +32,8 @@ from supabase import create_client
 from google import genai as google_genai
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from langchain_core.output_parsers import StrOutputParser
 
 from config import (
@@ -796,6 +798,31 @@ def format_history(rows: list[dict]) -> str:
     )
 
 
+def to_langchain_history_messages(rows: list[dict]) -> list[BaseMessage]:
+    """DB 이력을 LangChain 메시지 객체 리스트로 변환."""
+    messages: list[BaseMessage] = []
+    for r in rows:
+        role = (r.get("role") or "").lower()
+        content = (r.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "human":
+            messages.append(HumanMessage(content=content))
+        elif role == "ai":
+            messages.append(AIMessage(content=content))
+    return messages
+
+
+def format_history_messages_debug(messages: list[BaseMessage]) -> str:
+    if not messages:
+        return "(대화 이력 없음)"
+    lines = []
+    for m in messages:
+        role = "HUMAN" if isinstance(m, HumanMessage) else "AI"
+        lines.append(f"[{role}] {m.content}")
+    return "\n".join(lines)
+
+
 def format_documents(rows: list[dict]) -> str:
     """유사 문서를 LLM이 읽기 좋은 형태로 포맷합니다.
     - created_at 추가: 검색 문서가 언제 작성된 것인지 LLM이 파악 가능
@@ -875,10 +902,10 @@ prompt = ChatPromptTemplate.from_messages([
             "{documents}\n\n"
             "================================================================================\n"
             "=== 최근 대화 이력 ===\n"
-            "================================================================================\n"
-            "{history}"
+            "================================================================================"
         ),
     ),
+    MessagesPlaceholder(variable_name="history_messages"),
     ("human", "{user_input}"),
 ])
 
@@ -972,6 +999,7 @@ async def run_chat_loop() -> None:
                 # 회상형 질문일수록 키워드 가중치를 높여 재랭크
                 recall_mode = is_recall_query(user_input)
                 terms_for_debug = extract_keyword_terms(user_input)
+                history_messages = to_langchain_history_messages(history)
                 if route_label == ROUTE_KNOWLEDGE:
                     similar_docs_raw = rerank_documents(
                         user_input=user_input,
@@ -1012,7 +1040,7 @@ async def run_chat_loop() -> None:
                         current_time=current_time,
                         previous_summary=previous_summary,
                         documents=format_documents(similar_docs),
-                        history=format_history(history),
+                        history_messages=history_messages,
                         user_input=user_input,
                     )
                     print(f"\n[🧠 LLM에 주입된 전체 프롬프트 전문]")
@@ -1028,7 +1056,7 @@ async def run_chat_loop() -> None:
                     "current_time": current_time,
                     "previous_summary": previous_summary,
                     "documents": format_documents(similar_docs),
-                    "history": format_history(history),
+                    "history_messages": history_messages,
                     "user_input": user_input,
                 }
                 _cache_id = maybe_prepare_context_cache(
@@ -1036,7 +1064,7 @@ async def run_chat_loop() -> None:
                     history_uid=history_uid,
                     system_block_text=(
                         f"{RESPONSE_POLICY}\n{CHARACTER_PERSONA}\n{previous_summary}\n"
-                        f"{format_documents(similar_docs)}\n{format_history(history)}"
+                        f"{format_documents(similar_docs)}\n{format_history_messages_debug(history_messages)}"
                     ),
                 )
                 if ENABLE_DANGER_ROUTING and route_label == ROUTE_DANGER:
