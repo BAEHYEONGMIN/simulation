@@ -18,6 +18,9 @@ input_version.py (저장/임베딩/검색) + test.py (프롬프트/LLM 호출) �
 
 import os
 import sys
+import re
+import asyncio
+import threading
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 
@@ -32,12 +35,15 @@ from langchain_core.output_parsers import StrOutputParser
 from config import (
     SUPABASE_URL, SUPABASE_KEY,
     GEMINI_API_KEY_FREE,
-    CHAT_MODEL, EMBEDDING_MODEL,
+    CHAT_MODEL, EMBEDDING_MODEL,SUMMARY_MODEL
 )
 
 # 디버그 모드: True이면 검색 결과 및 프롬프트 전문을 터미널에 출력합니다.
 # 서버화(FastAPI) 시에는 False로 변경하세요.
 DEBUG = True
+LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
+_summary_state_lock = threading.Lock()
+_summary_inflight_sessions: set[tuple[str, str]] = set()
 
 # ─── DB 상수 ─────────────────────────────────────────────────
 SCHEMA          = "chatbot"
@@ -65,10 +71,38 @@ llm = ChatGoogleGenerativeAI(
     google_api_key=GEMINI_API_KEY_FREE,
 )
 
+summary_llm = ChatGoogleGenerativeAI(
+    model=SUMMARY_MODEL,
+    google_api_key=GEMINI_API_KEY_FREE,
+)
 
 # ─── 유틸 ────────────────────────────────────────────────────
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class TeeStream:
+    """stdout/stderr를 콘솔 + 파일로 동시에 기록하는 간단한 tee 스트림."""
+    def __init__(self, stream, file_obj):
+        self.stream = stream
+        self.file_obj = file_obj
+
+    def write(self, data: str):
+        self.stream.write(data)
+        self.file_obj.write(data)
+
+    def flush(self):
+        self.stream.flush()
+        self.file_obj.flush()
+
+
+def open_session_log_file() -> tuple[str, object]:
+    os.makedirs(LOG_DIR, exist_ok=True)
+    local_now = datetime.now(timezone.utc).astimezone()
+    log_name = local_now.strftime("chat_session_%Y%m%d.log")
+    log_path = os.path.join(LOG_DIR, log_name)
+    log_fp = open(log_path, "a", encoding="utf-8", buffering=1)
+    return log_path, log_fp
 
 
 # ─── 임베딩 ──────────────────────────────────────────────────
@@ -163,17 +197,24 @@ def insert_document(
     content: str,
     embedding: list[float],
     related_message_id: int,
+    speaker_type: str = "user",
+    source_type: str = "chat_message",
+    extra_metadata: dict | None = None,
 ) -> dict:
+    metadata = {
+        "conf_uid": conf_uid,
+        "history_uid": history_uid,
+        "speaker_id": speaker_id,
+        "speaker_type": speaker_type,
+        "source_type": source_type,
+        "related_message_id": related_message_id,
+    }
+    if extra_metadata:
+        metadata.update(extra_metadata)
+
     payload = {
         "content": content,
-        "metadata": {
-            "conf_uid": conf_uid,
-            "history_uid": history_uid,
-            "speaker_id": speaker_id,
-            "speaker_type": "user",
-            "source_type": "chat_message",
-            "related_message_id": related_message_id,
-        },
+        "metadata": metadata,
         "embedding": embedding,
         "created_at": now_iso(),
     }
@@ -194,10 +235,10 @@ def fetch_latest_summary(conf_uid: str, history_uid: str) -> dict | None:
     result = (
         supabase.schema(SCHEMA)
         .table(TABLE_SUMMARIES)
-        .select("id, summary, start_message_id, end_message_id, message_count, created_at")
+        .select("id, summary_type, summary_text, start_message_id, end_message_id, covered_message_count, summary_seq, created_at")
         .eq("conf_uid", conf_uid)
         .eq("history_uid", history_uid)
-        .order("created_at", desc=True)
+        .order("summary_seq", desc=True)
         .limit(1)
         .execute()
     )
@@ -241,7 +282,9 @@ def insert_summary(
     summary: str,
     start_message_id: int,
     end_message_id: int,
-    message_count: int,
+    covered_message_count: int,
+    summary_seq: int,
+    participants: list = None,
     summary_type: str = "rolling",  # rolling | checkpoint | final
 ) -> dict:
     """conversation_summaries에 요약본을 저장합니다.
@@ -263,19 +306,21 @@ def insert_summary(
     │    └─ summary_type     : 누적 요약 종류 (rolling / checkpoint / final)
     │    └─ start_message_id : 어느 메시지부터 요약되었는지
     │    └─ end_message_id   : 어느 메시지까지 요약되었는지
-    │    └─ message_count    : 요약된 대화 수
+    │    └─ covered_message_count : 요약된 대화 수
     │
     └─────────────────────────────────────────────────────────────────────────────
     """
     payload = {
-        "conf_uid":         conf_uid,
-        "history_uid":      history_uid,
-        "summary":          summary,
-        "summary_type":     summary_type,
-        "start_message_id": start_message_id,
-        "end_message_id":   end_message_id,
-        "message_count":    message_count,
-        "created_at":       now_iso(),
+        "conf_uid":               conf_uid,
+        "history_uid":            history_uid,
+        "summary_text":           summary,
+        "summary_type":           summary_type,
+        "start_message_id":       start_message_id,
+        "end_message_id":         end_message_id,
+        "covered_message_count":  covered_message_count,
+        "summary_seq":            summary_seq,
+        "participants":           participants,
+        "created_at":             now_iso(),
     }
     result = supabase.schema(SCHEMA).table(TABLE_SUMMARIES).insert(payload).execute()
     if not result.data:
@@ -289,6 +334,48 @@ def format_messages_for_summary(rows: list[dict]) -> str:
     return "\n".join(
         f"[{r.get('created_at','')[:10]}] {r.get('display_name') or r.get('speaker_id')}: {r.get('content')}"
         for r in rows
+    )
+
+
+def normalize_summary_text(text: str) -> str:
+    """하위 모델 출력의 마크다운 흔들림을 정규화해 저장 포맷을 일정하게 유지."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    normalized = []
+
+    for ln in lines:
+        ln = re.sub(r"\*\*(.*?)\*\*", r"\1", ln)       # bold 제거
+        ln = re.sub(r"`([^`]*)`", r"\1", ln)           # inline code 제거
+        ln = re.sub(r"^\s*[*+-]\s*", "", ln)           # 불릿 제거
+        ln = re.sub(r"^\s*\d+[.)]\s*", "", ln)         # 번호 제거
+        if ln:
+            normalized.append(f"- {ln}")
+
+    if not normalized:
+        cleaned = re.sub(r"\s+", " ", (text or "").strip())
+        return f"- {cleaned}" if cleaned else ""
+
+    return "\n".join(normalized[:5])
+
+
+def format_latest_summary(summary_row: dict | None) -> str:
+    """프롬프트 주입용 최신 누적 요약 포맷"""
+    if not summary_row:
+        return "(이전 누적 요약 없음)"
+
+    created_at = (summary_row.get("created_at") or "")[:10]
+    summary_type = summary_row.get("summary_type") or "rolling"
+    start_id = summary_row.get("start_message_id")
+    end_id = summary_row.get("end_message_id")
+    summary_text = summary_row.get("summary_text", "").strip()
+
+    if not summary_text:
+        return "(이전 누적 요약 없음)"
+
+    return (
+        f"[작성일 {created_at}] "
+        f"[type={summary_type}] "
+        f"[range={start_id}~{end_id}]\n"
+        f"{summary_text}"
     )
 
 
@@ -329,9 +416,11 @@ RESPONSE_POLICY = """
 """
 
 CHARACTER_PERSONA = """
-- 너는 친근한 AI 챗봇이다.
-- 아래 참고 문서와 최근 대화 이력을 바탕으로 답변하라.
-- 모르는 내용은 지어내지 말고 솔직하게 말하라.
+- 너의 이름은 '수아(Sua)'이고, 20대이고, 컴퓨터공학과 전공이야.
+- [이전 누적 요약] 섹션을 네 진짜 기억으로 생각하고, 유저와 나눈 대화를 다 아는 척하며 말해.
+- [참고 문서] 섹션의 정보를 토대로 대답하되, AI 티 내지 말고 친근한 구어체로 대화해.
+- 모든 답변은 짧은 메신저 말투로, 3문장 이내로만 끊어서 대답해.
+- 친근한 반말(어/야)을 적절히 섞어서 대답해.
 """
 # ─── 페르소나 (캐릭터 설정) ───────────────────────────────────
 # 나중에 캐릭터가 여러 명 늘어나면 이 부분을 DB에서 읽어오도록 변경하면 됩니다.
@@ -369,6 +458,10 @@ prompt = ChatPromptTemplate.from_messages([
             "================================================================================\n"
             "{persona}\n\n"
             "================================================================================\n"
+            "=== 이전 누적 요약 ===\n"
+            "================================================================================\n"
+            "{previous_summary}\n\n"
+            "================================================================================\n"
             "=== 참고 문서 (벡터 검색 결과) ===\n"
             "================================================================================\n"
             "{documents}\n\n"
@@ -386,138 +479,162 @@ chain = prompt | llm | StrOutputParser()
 
 
 # ─── 메인 루프 ────────────────────────────────────────────────
-if __name__ == "__main__":
-    conf_uid    = "sua_test_002"
+async def stream_answer(chain_inputs: dict, char_name: str) -> str:
+    """astream으로 응답을 실시간 출력하고 최종 문자열을 반환."""
+    chunks: list[str] = []
+    print(f"\n{char_name}: ", end="", flush=True)
+    async for chunk in chain.astream(chain_inputs):
+        if not chunk:
+            continue
+        print(chunk, end="", flush=True)
+        chunks.append(chunk)
+    print("\n")
+    print("=" * 80)
+    return "".join(chunks).strip()
+
+
+def run_chat_loop() -> None:
+    conf_uid    = "sua_test_003" # 대화 요약 테스트용
     history_uid = "session_001"
     user_id     = "user_baemin"
     user_name   = "배민"
     char_id     = "char_sua"
     char_name   = "수아"
 
+    log_path, log_fp = open_session_log_file()
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    sys.stdout = TeeStream(original_stdout, log_fp)
+    sys.stderr = TeeStream(original_stderr, log_fp)
+
+    print(f"[로그 파일] {log_path}")
+    print(f"[시작 시각] {datetime.now(timezone.utc).astimezone().isoformat()}")
     print(f"[모델] LLM={CHAT_MODEL} / Embedding={EMBEDDING_MODEL}")
     print("대화를 시작합니다. 종료: exit / quit / q")
     print("=" * 80)
 
-    while True:
-        user_input = input("나: ").strip()
+    try:
+        while True:
+            user_input = input("나: ").strip()
+            print(f"[사용자 입력] {user_input}")
 
-        if user_input.lower() in {"exit", "quit", "q"}:
-            print("종료합니다.")
-            break
-        if not user_input:
-            continue
+            if user_input.lower() in {"exit", "quit", "q"}:
+                print("종료합니다.")
+                break
+            if not user_input:
+                continue
 
-        try:
-            # 현재 시간 주입 (LLM이 '어제', '지난주' 같은 표현을 계산할 수 있도록)
-            current_time = datetime.now(timezone.utc).astimezone().strftime("%Y년 %m월 %d일 %A %H:%M")
-
-            # 1) 임베딩 생성 (라우팅 + RAG 검색에 모두 재활용)
-            query_embedding = generate_embedding(user_input)
-
-            # 2) 유사 문서 검색 + 최근 대화 이력을 병렬로 조회
-            #    두 작업은 서로 독립적이므로 ThreadPoolExecutor로 동시 실행하여 응답 속도 개선
-            with ThreadPoolExecutor() as executor:
-                future_docs    = executor.submit(find_similar_documents, query_embedding, conf_uid, 3)
-                future_history = executor.submit(fetch_recent_messages, conf_uid, history_uid, 8)
-                similar_docs_raw = future_docs.result()
-                history          = future_history.result()
-
-            # 유사도 하한선(Threshold) 적용: 0.75 미만의 쓰레기 데이터 필터링
-            THRESHOLD = 0.75
-            similar_docs = [d for d in similar_docs_raw if d.get('similarity', 0) >= THRESHOLD]
-
-            if DEBUG:
-                print("\n" + "=" * 80)
-                print(f"[🔍 검색된 유사 문서 (Threshold >= {THRESHOLD})]")
-                for d in similar_docs_raw:
-                    sim = d.get('similarity', 0)
-                    if sim >= THRESHOLD:
-                        print(f" ✅ [유사도 {sim:.3f}] {d['content']}")
-                    else:
-                        print(f" ❌ [유사도 {sim:.3f}] (버려짐) {d['content']}")
-                if not similar_docs_raw:
-                    print(" - 검색된 문서 없음")
-                print("=" * 80)
-
-            if DEBUG:
-                # 프롬프트 전문 출력 (개발/디버그 용도)
-                formatted_prompt = prompt.format_messages(
-                    policy=RESPONSE_POLICY,
-                    persona=CHARACTER_PERSONA,
-                    current_time=current_time,
-                    documents=format_documents(similar_docs),
-                    history=format_history(history),
-                    user_input=user_input,
-                )
-                print(f"\n[🧠 LLM에 주입된 전체 프롬프트 전문]")
-                for msg in formatted_prompt:
-                    print(f"[{msg.type.upper()}]")
-                    print(f"{msg.content}\n")
-                print("=" * 80)
-
-            # 3) LLM 호출 (LCEL 체인)
-            answer = chain.invoke({
-                "policy":       RESPONSE_POLICY,
-                "persona":      CHARACTER_PERSONA,
-                "current_time": current_time,
-                "documents":    format_documents(similar_docs),
-                "history":      format_history(history),
-                "user_input":   user_input,
-            })
-
-            print(f"\n{char_name}: {answer}\n")
-            print("=" * 80)
-
-            # 5) 사용자 메시지 저장
-            saved_user_msg = insert_message(
-                conf_uid=conf_uid,
-                history_uid=history_uid,
-                role="human",
-                speaker_type="user",
-                speaker_id=user_id,
-                display_name=user_name,
-                content=user_input,
-            )
-
-            # 6) 사용자 메시지 임베딩 → documents 저장
-            insert_document(
-                conf_uid=conf_uid,
-                history_uid=history_uid,
-                speaker_id=user_id,
-                content=user_input,
-                embedding=query_embedding,
-                related_message_id=saved_user_msg["id"],
-            )
-
-            # 7) AI 응답 메시지 저장 (임베딩 없이 로그만 남기되, RAG 출처 트래킹)
-            # 검색했던 문서들의 id와 점수만 간추려서 메타데이터로 저장
-            retrieved_info = [
-                {"id": doc["id"], "similarity": doc.get("similarity", 0)}
-                for doc in similar_docs
-            ]
-
-            insert_message(
-                conf_uid=conf_uid,
-                history_uid=history_uid,
-                role="ai",
-                speaker_type="character",
-                speaker_id=char_id,
-                display_name=char_name,
-                content=answer,
-                reply_to_message_id=saved_user_msg["id"],
-                metadata={"retrieved_docs": retrieved_info} if retrieved_info else None
-            )
-
-            # 8) 대화 요약 트리거 (마지막 요약 이후 10턴 쌓이면 자동 실행)
             try:
-                trigger_summarization_if_needed(conf_uid, history_uid)
-            except Exception as e:
-                # 요약 실패해도 메인 응답 흐름은 절대 막히지 않음
-                # 다음 턴 진입 시 unprocessed >= 10 조건이 다시 충족되어 자동 재시도됨
-                print(f"[요약 실패 — 다음 턴 재시도 예정] {e}")
+                # 현재 시간 주입 (LLM이 '어제', '지난주' 같은 표현을 계산할 수 있도록)
+                current_time = datetime.now(timezone.utc).astimezone().strftime("%Y년 %m월 %d일 %A %H:%M")
 
-        except Exception as e:
-            print(f"\n[오류] {e}\n")
+                # 1) 임베딩 생성 (라우팅 + RAG 검색에 모두 재활용)
+                query_embedding = generate_embedding(user_input)
+
+                # 2) 유사 문서 검색 + 최근 대화 이력을 병렬로 조회
+                with ThreadPoolExecutor() as executor:
+                    future_docs = executor.submit(find_similar_documents, query_embedding, conf_uid, 3)
+                    future_history = executor.submit(fetch_recent_messages, conf_uid, history_uid, 12)
+                    future_summary = executor.submit(fetch_latest_summary, conf_uid, history_uid)
+                    similar_docs_raw = future_docs.result()
+                    history = future_history.result()
+                    latest_summary = future_summary.result()
+
+                previous_summary = format_latest_summary(latest_summary)
+
+                # 유사도 하한선(Threshold) 적용
+                THRESHOLD = 0.75
+                similar_docs = [d for d in similar_docs_raw if d.get('similarity', 0) >= THRESHOLD]
+
+                if DEBUG:
+                    print("\n" + "=" * 80)
+                    print(f"[🔍 검색된 유사 문서 (Threshold >= {THRESHOLD})]")
+                    for d in similar_docs_raw:
+                        sim = d.get('similarity', 0)
+                        if sim >= THRESHOLD:
+                            print(f" ✅ [유사도 {sim:.3f}] {d['content']}")
+                        else:
+                            print(f" ❌ [유사도 {sim:.3f}] (버려짐) {d['content']}")
+                    if not similar_docs_raw:
+                        print(" - 검색된 문서 없음")
+                    print("=" * 80)
+
+                if DEBUG:
+                    formatted_prompt = prompt.format_messages(
+                        policy=RESPONSE_POLICY,
+                        persona=CHARACTER_PERSONA,
+                        current_time=current_time,
+                        previous_summary=previous_summary,
+                        documents=format_documents(similar_docs),
+                        history=format_history(history),
+                        user_input=user_input,
+                    )
+                    print(f"\n[🧠 LLM에 주입된 전체 프롬프트 전문]")
+                    for msg in formatted_prompt:
+                        print(f"[{msg.type.upper()}]")
+                        print(f"{msg.content}\n")
+                    print("=" * 80)
+
+                # 3) LLM 비동기 스트리밍 호출 (LCEL 체인)
+                chain_inputs = {
+                    "policy": RESPONSE_POLICY,
+                    "persona": CHARACTER_PERSONA,
+                    "current_time": current_time,
+                    "previous_summary": previous_summary,
+                    "documents": format_documents(similar_docs),
+                    "history": format_history(history),
+                    "user_input": user_input,
+                }
+                answer = asyncio.run(stream_answer(chain_inputs, char_name))
+
+                # 5) 사용자 메시지 저장
+                saved_user_msg = insert_message(
+                    conf_uid=conf_uid,
+                    history_uid=history_uid,
+                    role="human",
+                    speaker_type="user",
+                    speaker_id=user_id,
+                    display_name=user_name,
+                    content=user_input,
+                )
+
+                # 6) 사용자 메시지 임베딩 → documents 저장
+                insert_document(
+                    conf_uid=conf_uid,
+                    history_uid=history_uid,
+                    speaker_id=user_id,
+                    content=user_input,
+                    embedding=query_embedding,
+                    related_message_id=saved_user_msg["id"],
+                )
+
+                # 7) AI 응답 메시지 저장 (RAG 출처 트래킹 포함)
+                retrieved_info = [
+                    {"id": doc["id"], "similarity": doc.get("similarity", 0)}
+                    for doc in similar_docs
+                ]
+                insert_message(
+                    conf_uid=conf_uid,
+                    history_uid=history_uid,
+                    role="ai",
+                    speaker_type="character",
+                    speaker_id=char_id,
+                    display_name=char_name,
+                    content=answer,
+                    reply_to_message_id=saved_user_msg["id"],
+                    metadata={"retrieved_docs": retrieved_info} if retrieved_info else None
+                )
+
+                # 8) 대화 요약 트리거 (백그라운드 비동기)
+                queue_summarization_job(conf_uid, history_uid)
+
+            except Exception as e:
+                print(f"\n[오류] {e}\n")
+    finally:
+        print(f"[종료 시각] {datetime.now(timezone.utc).astimezone().isoformat()}")
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        log_fp.close()
 
 
 # ─── 대화 요약 서비스 ─────────────────────────────────────────
@@ -537,6 +654,36 @@ def trigger_summarization_if_needed(conf_uid: str, history_uid: str) -> None:
     summarize_and_save(conf_uid, history_uid, latest_summary, unprocessed)
 
 
+def _run_summarization_job(conf_uid: str, history_uid: str) -> None:
+    """요약 백그라운드 작업 본체."""
+    try:
+        trigger_summarization_if_needed(conf_uid, history_uid)
+    except Exception as e:
+        print(f"[요약 실패 — 다음 턴 재시도 예정] {e}")
+    finally:
+        key = (conf_uid, history_uid)
+        with _summary_state_lock:
+            _summary_inflight_sessions.discard(key)
+
+
+def queue_summarization_job(conf_uid: str, history_uid: str) -> None:
+    """같은 세션에서 중복 요약 작업이 겹치지 않도록 백그라운드 큐잉."""
+    key = (conf_uid, history_uid)
+    with _summary_state_lock:
+        if key in _summary_inflight_sessions:
+            if DEBUG:
+                print(f"[요약 스킵] 이미 백그라운드 요약 실행 중: {conf_uid}/{history_uid}")
+            return
+        _summary_inflight_sessions.add(key)
+
+    worker = threading.Thread(
+        target=_run_summarization_job,
+        args=(conf_uid, history_uid),
+        daemon=True,
+    )
+    worker.start()
+
+
 def summarize_and_save(
     conf_uid: str,
     history_uid: str,
@@ -547,7 +694,7 @@ def summarize_and_save(
 
     # 재료 1: 이전 누적 요약본
     prev_summary_text = (
-        latest_summary["summary"] if latest_summary
+        latest_summary["summary_text"] if latest_summary
         else "(첫 번째 요약 — 이전 내용 없음)"
     )
     last_id = latest_summary["end_message_id"] if latest_summary else 0
@@ -564,11 +711,14 @@ def summarize_and_save(
     # 재료 3: 새로 쌓인 10개 (레이스 컨디션 방지: 정확히 TRIGGER_COUNT만 처리)
     new_block = unprocessed[:SUMMARY_TRIGGER_COUNT]
 
+    # 참여자 명단 추출 (중복 제거)
+    participant_names = list(set(r.get("display_name") for r in new_block if r.get("display_name")))
+
     bridge_text    = format_messages_for_summary(bridge)    if bridge    else "(없음)"
     new_block_text = format_messages_for_summary(new_block)
 
     summary_prompt = (
-        "다음은 카카오톡 대화 로그입니다. 키워드를 중심으로 간결하게 요약해 주세요.\n\n"
+        "다음은 채팅 대화 로그입니다. 키워드를 중심으로 간결하게 요약해 주세요.\n\n"
         f"[이전 누적 요약본]\n{prev_summary_text}\n\n"
         f"[이음새 대화 — 문맥 연결용]\n{bridge_text}\n\n"
         f"[새로 시작된 대화]\n{new_block_text}\n\n"
@@ -579,8 +729,9 @@ def summarize_and_save(
         "- 한국어로만 작성할 것"
     )
 
-    # Flash 모델로 요약 실행 (단순 압축 작업, Pro급 추론 불필요)
-    new_summary_text = llm.invoke(summary_prompt).content
+    # Flash-lite 모델로 요약 실행 (단순 압축 작업, Pro급 추론 불필요, 나중에 flash로 바꾸던가 하기)
+    raw_summary_text = summary_llm.invoke(summary_prompt).content
+    new_summary_text = normalize_summary_text(raw_summary_text)
 
     if DEBUG:
         print(f"\n[📝 누적 요약 완료]\n{new_summary_text}\n")
@@ -590,9 +741,11 @@ def summarize_and_save(
         conf_uid=conf_uid,
         history_uid=history_uid,
         summary=new_summary_text,
-        start_message_id=(last_id + 1) if last_id else 0,
+        start_message_id=new_block[0]["id"],
         end_message_id=new_block[-1]["id"],
-        message_count=len(new_block),
+        covered_message_count=len(new_block),
+        summary_seq=(latest_summary["summary_seq"] + 1) if latest_summary else 1,
+        participants=participant_names,
     )
 
     # 저장 2: documents_gemini 테이블 (오래된 세션 RAG 검색용 벡터화)
@@ -605,4 +758,10 @@ def summarize_and_save(
         content=new_summary_text,
         embedding=summary_embedding,
         related_message_id=new_block[-1]["id"],
+        speaker_type="system", #chat_message와 구분하기 위해
+        source_type="summary", #chat_message와 구분하기 위해
     )
+
+
+if __name__ == "__main__":
+    run_chat_loop()

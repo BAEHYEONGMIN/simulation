@@ -1,18 +1,36 @@
-# --- Google Drive Link (Symbolic Link / Junction) ---
-doro/
-drive_images/
-doro
+# =============================================================
+# .gitignore — baemin_project
+# =============================================================
 
-# --- Python ---
+# --- 민감 정보 (절대 커밋 금지) ---
+.env
+.env.*
+!.env.example
+
+# --- Google Drive 심볼릭 링크 / Junction ---
+doro/
+doro
+drive_images/
+
+# --- Python 캐시 / 빌드 ---
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.dylib
 .Python
+
+# --- 가상환경 ---
+venv/
+.venv/
 env/
+.env/
+ENV/
+
+# --- 패키지 빌드 산출물 ---
 build/
-develop-eggs/
 dist/
+develop-eggs/
 downloads/
 eggs/
 .eggs/
@@ -27,10 +45,9 @@ wheels/
 *.egg
 
 # --- PyInstaller ---
-#  Usually these go into build/ and dist/
 *.spec
 
-# --- IDEs / Editors ---
+# --- IDE / 에디터 ---
 .vscode/
 .idea/
 *.swp
@@ -38,7 +55,7 @@ wheels/
 *.sublime-project
 *.sublime-workspace
 
-# --- OS Specific ---
+# --- OS 자동 생성 파일 ---
 .DS_Store
 .DS_Store?
 ._*
@@ -47,22 +64,30 @@ wheels/
 ehthumbs.db
 Thumbs.db
 
-# --- Large / Temp Files ---
+# --- 로그 / 임시 파일 ---
 *.log
 *.tmp
 *.bak
+
+# --- 실행 파일 / 압축 파일 ---
 *.exe
 *.dll
-*.so
-*.dylib
 *.msi
 *.zip
 *.tar.gz
 *.rar
 *.7z
 
-# --- Media (Large dataset images, if not intended for repo) ---
-# ※ 만약 유튜브 위젯의 icon.png 같은 소량 필수 리소스는 따로 관리해주세요.
+# --- LangChain / AI 모델 캐시 ---
+# SentenceTransformer 등 다운로드 모델 캐시
+.cache/
+sentence-transformers/
+
+# --- langchain_test 진단용 스크립트 (선택적으로 제외) ---
+langchain_test/check_models.py
+
+# --- 미디어 / 대용량 파일 ---
+# ※ icon.png 같은 필수 소형 리소스는 제외하고 싶다면 아래 주석 해제
 # *.png
 # *.jpg
 # *.jpeg
