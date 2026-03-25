@@ -447,6 +447,7 @@ async def chat_endpoint(request: ChatRequest):
 - `source_type` 우선순위:
   - 회상형에서는 `chat_message` 가점, `summary`는 보조
   - 일반형에서는 `summary`/`chat_message` 혼합 허용
+- 현재 세션 최신 요약 2개는 RAG 후보에서 제외(중복 주입 방지)
 
 #### 기대 효과
 
@@ -508,6 +509,20 @@ async def chat_endpoint(request: ChatRequest):
 - 목적: 표현 차이 보정 (`책`↔`소설`↔`작품`)
 - 현재 방식: 수동 사전 + 운영 로그 기반 확장 예정
 
+### 11. 라우팅 운영 보강 (신규)
+
+현재 코드 기준으로 라우팅은 아래처럼 운영됩니다.
+
+- `DANGER`는 명시 패턴 매칭 전용으로 처리(프로토타입 임베딩/코사인 계산 제외)
+- `classify_route`는 초기화 여부를 먼저 확인하여 불필요한 락 획득 최소화
+- `KNOWLEDGE_HINTS`는 회상/컨텍스트 참조 중심으로 축소
+- `DANGER` 입력은 문서 저장 및 요약 트리거에서 제외(맥락 오염 방지)
+- `router_samples.json`의 `knowledge` 샘플은 일반 상식 질문 비중을 줄이고 회상형 중심으로 정리
+
+보류 항목:
+- 샘플별 개별 임베딩 센트로이드 프로토타입(리뷰 3번)은 **미적용**
+- 사유: 초기화 시 임베딩 API 호출 횟수가 크게 증가하여 시작 지연/비용 영향이 있어, 현재 단계에서는 운영 로그 기반 정확도 평가 후 옵션화하여 도입 예정
+
 ---
 
 ## 📋 구현 우선순위 체크리스트
@@ -543,6 +558,12 @@ async def chat_endpoint(request: ChatRequest):
   - [ ] CHITCHAT 경로: RAG 스킵, 최근 2~3턴 이력 포함하여 LLM 직발
   - [ ] KNOWLEDGE 경로: 전체 RAG 파이프라인 가동
         ~~ - [ ] DANGER 경로: 임계값 0.65, 안전 응답 리턴 ~~
+- [x] 시맨틱 라우팅 1차 적용 (`chat_new.py` 기준)
+  - [x] CHITCHAT: RAG 스킵
+  - [x] KNOWLEDGE: 기존 RAG 파이프라인 사용
+  - [x] DANGER: 패턴 매칭 기반 최소 처리(프로토타입 계산 제외)
+  - [x] DANGER 입력 문서 저장/요약 트리거 제외
+  - [ ] 샘플별 센트로이드 프로토타입(정확도 개선) — 시작 지연/호출량 증가로 보류
 - [ ] 저장 가치 판단(Document Gating) 추가
   - [x] 룰 베이스 필터 (`is_worth_storing`) 기본 적용 (2026-03-25 완료)
   - [ ] CHITCHAT 라우팅 결과 연계

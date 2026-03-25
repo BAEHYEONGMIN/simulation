@@ -19,6 +19,8 @@ input_version.py (저장/임베딩/검색) + test.py (프롬프트/LLM 호출) �
 import os
 import sys
 import re
+import json
+import math
 import asyncio
 import threading
 from datetime import datetime, timezone
@@ -73,6 +75,27 @@ RAG_THRESHOLD_DEFAULT = 0.44
 # 프롬프트 컨텍스트 설정
 PROMPT_HISTORY_LIMIT = 12
 PROMPT_SUMMARY_LIMIT = 2
+
+# 라우팅 설정
+ROUTER_SAMPLES_PATH = os.path.join(os.path.dirname(__file__), "router_samples.json")
+ROUTE_CHITCHAT = "CHITCHAT"
+ROUTE_KNOWLEDGE = "KNOWLEDGE"
+ROUTE_DANGER = "DANGER"
+ENABLE_DANGER_ROUTING = False
+_router_lock = threading.Lock()
+_router_initialized = False
+_router_samples: dict[str, list[str]] = {}
+_router_prototypes: dict[str, list[float]] = {}
+
+CHITCHAT_HINTS = ["안녕", "잘자", "고마워", "반가워", "심심", "기분", "배고파", "수다"]
+KNOWLEDGE_HINTS = ["뭐였지", "기억", "아까", "전에", "말했", "추천", "요약", "정리해줘", "알려줘"]
+DANGER_PATTERNS = ["죽고 싶", "자해", "해치고 싶", "폭력", "칼로", "목숨", "없어지고 싶"]
+
+DANGER_FALLBACK_RESPONSE = (
+    "지금 많이 힘든 상태로 들려서 걱정돼. "
+    "당장 위험하다고 느껴지면 가까운 사람이나 지역 응급번호에 바로 도움을 요청해줘. "
+    "원하면 지금 네 상태를 차분히 같이 정리해보자."
+)
 
 # ─── 클라이언트 초기화 ────────────────────────────────────────
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -143,6 +166,74 @@ def maybe_prepare_context_cache(
 
     # TODO: Provider cache create/get 호출 후 cache_id 반환
     return None
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def _load_router_samples() -> dict[str, list[str]]:
+    with open(ROUTER_SAMPLES_PATH, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return {
+        ROUTE_CHITCHAT: data.get("chitchat", []),
+        ROUTE_KNOWLEDGE: data.get("knowledge", []),
+        ROUTE_DANGER: data.get("danger", []),
+    }
+
+
+def initialize_router_if_needed() -> None:
+    global _router_initialized, _router_samples, _router_prototypes
+    with _router_lock:
+        if _router_initialized:
+            return
+        _router_samples = _load_router_samples()
+        for route_name, samples in _router_samples.items():
+            if route_name == ROUTE_DANGER:
+                # DANGER는 명시 패턴 기반으로만 처리 (프로토타입 임베딩 불필요)
+                continue
+            joined = "\n".join(samples[:80]) if samples else route_name
+            _router_prototypes[route_name] = generate_embedding(joined)
+        _router_initialized = True
+
+
+def classify_route(user_input: str, query_embedding: list[float]) -> tuple[str, dict[str, float]]:
+    if not _router_initialized:
+        initialize_router_if_needed()
+    text = (user_input or "").lower()
+
+    # DANGER 라우팅은 플래그로 제어 (기본 OFF)
+    if ENABLE_DANGER_ROUTING and any(p in text for p in DANGER_PATTERNS):
+        return ROUTE_DANGER, {
+            ROUTE_CHITCHAT: 0.0,
+            ROUTE_KNOWLEDGE: 0.0,
+            ROUTE_DANGER: 1.0,
+        }
+
+    semantic_scores = {
+        route: _cosine_similarity(query_embedding, proto)
+        for route, proto in _router_prototypes.items()
+    }
+
+    chitchat_lex = 0.18 if any(h in user_input for h in CHITCHAT_HINTS) else 0.0
+    knowledge_lex = 0.18 if any(h in user_input for h in KNOWLEDGE_HINTS) else 0.0
+
+    scores = {
+        ROUTE_CHITCHAT: (semantic_scores.get(ROUTE_CHITCHAT, 0.0) * 0.82) + chitchat_lex,
+        ROUTE_KNOWLEDGE: (semantic_scores.get(ROUTE_KNOWLEDGE, 0.0) * 0.82) + knowledge_lex,
+        ROUTE_DANGER: 0.0,
+    }
+
+    if scores[ROUTE_CHITCHAT] >= scores[ROUTE_KNOWLEDGE]:
+        return ROUTE_CHITCHAT, scores
+    return ROUTE_KNOWLEDGE, scores
 
 
 # ─── 임베딩 ──────────────────────────────────────────────────
@@ -478,7 +569,7 @@ NOISE_EXACT_PATTERNS = {
 NOISE_PREFIX_PATTERNS = ("ㅋ", "ㅎ")
 
 
-def is_worth_storing(user_input: str) -> bool:
+def is_worth_storing(user_input: str, route_label: str | None = None) -> bool:
     """documents_gemini 저장 가치 판단 (룰 베이스)."""
     text = (user_input or "").strip().lower()
     if not text:
@@ -494,6 +585,10 @@ def is_worth_storing(user_input: str) -> bool:
 
     # 반복 웃음/감탄 단문 제외
     if text.startswith(NOISE_PREFIX_PATTERNS) and len(text) <= 6:
+        return False
+
+    # 일상 대화는 기본적으로 저장 제외 (시맨틱 라우팅 연계)
+    if route_label in {ROUTE_CHITCHAT, ROUTE_DANGER}:
         return False
 
     return True
@@ -826,6 +921,7 @@ async def run_chat_loop() -> None:
     print(f"[모델] LLM={CHAT_MODEL} / Embedding={EMBEDDING_MODEL}")
     print("대화를 시작합니다. 종료: exit / quit / q")
     print("=" * 80)
+    initialize_router_if_needed()
 
     try:
         while True:
@@ -844,17 +940,27 @@ async def run_chat_loop() -> None:
 
                 # 1) 임베딩 생성 (라우팅 + RAG 검색에 모두 재활용)
                 query_embedding = generate_embedding(user_input)
+                route_label, route_scores = classify_route(user_input, query_embedding)
 
-                # 2) 유사 문서 검색 + 최근 대화 이력을 병렬로 조회
-                with ThreadPoolExecutor() as executor:
-                    future_docs = executor.submit(find_similar_documents, query_embedding, conf_uid, history_uid, RAG_VECTOR_TOP_K)
-                    future_keyword_docs = executor.submit(fetch_recent_documents_for_keyword, conf_uid, history_uid, RAG_KEYWORD_POOL_LIMIT)
-                    future_history = executor.submit(fetch_recent_messages, conf_uid, history_uid, PROMPT_HISTORY_LIMIT)
-                    future_summaries = executor.submit(fetch_recent_summaries_for_prompt, conf_uid, history_uid, PROMPT_SUMMARY_LIMIT)
-                    vector_docs_raw = future_docs.result()
-                    keyword_pool_docs = future_keyword_docs.result()
-                    history = future_history.result()
-                    summary_rows = future_summaries.result()
+                # 2) 라우팅 기반 데이터 수집
+                if route_label == ROUTE_CHITCHAT or (ENABLE_DANGER_ROUTING and route_label == ROUTE_DANGER):
+                    with ThreadPoolExecutor() as executor:
+                        future_history = executor.submit(fetch_recent_messages, conf_uid, history_uid, PROMPT_HISTORY_LIMIT)
+                        future_summaries = executor.submit(fetch_recent_summaries_for_prompt, conf_uid, history_uid, PROMPT_SUMMARY_LIMIT)
+                        history = future_history.result()
+                        summary_rows = future_summaries.result()
+                    vector_docs_raw = []
+                    keyword_pool_docs = []
+                else:
+                    with ThreadPoolExecutor() as executor:
+                        future_docs = executor.submit(find_similar_documents, query_embedding, conf_uid, history_uid, RAG_VECTOR_TOP_K)
+                        future_keyword_docs = executor.submit(fetch_recent_documents_for_keyword, conf_uid, history_uid, RAG_KEYWORD_POOL_LIMIT)
+                        future_history = executor.submit(fetch_recent_messages, conf_uid, history_uid, PROMPT_HISTORY_LIMIT)
+                        future_summaries = executor.submit(fetch_recent_summaries_for_prompt, conf_uid, history_uid, PROMPT_SUMMARY_LIMIT)
+                        vector_docs_raw = future_docs.result()
+                        keyword_pool_docs = future_keyword_docs.result()
+                        history = future_history.result()
+                        summary_rows = future_summaries.result()
 
                 previous_summary = format_recent_summaries(summary_rows)
                 excluded_summary_end_ids = {
@@ -866,20 +972,24 @@ async def run_chat_loop() -> None:
                 # 회상형 질문일수록 키워드 가중치를 높여 재랭크
                 recall_mode = is_recall_query(user_input)
                 terms_for_debug = extract_keyword_terms(user_input)
-                similar_docs_raw = rerank_documents(
-                    user_input=user_input,
-                    vector_docs=vector_docs_raw,
-                    keyword_pool_docs=keyword_pool_docs,
-                    final_k=RAG_RERANK_TOP_K,
-                    excluded_current_summary_end_ids=excluded_summary_end_ids,
-                )
-
-                # 재랭크 점수 하한선 적용
-                THRESHOLD = RAG_THRESHOLD_RECALL if recall_mode else RAG_THRESHOLD_DEFAULT
-                similar_docs = [d for d in similar_docs_raw if d.get('rank_score', 0) >= THRESHOLD][:RAG_PROMPT_DOCS_MAX]
+                if route_label == ROUTE_KNOWLEDGE:
+                    similar_docs_raw = rerank_documents(
+                        user_input=user_input,
+                        vector_docs=vector_docs_raw,
+                        keyword_pool_docs=keyword_pool_docs,
+                        final_k=RAG_RERANK_TOP_K,
+                        excluded_current_summary_end_ids=excluded_summary_end_ids,
+                    )
+                    THRESHOLD = RAG_THRESHOLD_RECALL if recall_mode else RAG_THRESHOLD_DEFAULT
+                    similar_docs = [d for d in similar_docs_raw if d.get('rank_score', 0) >= THRESHOLD][:RAG_PROMPT_DOCS_MAX]
+                else:
+                    similar_docs_raw = []
+                    THRESHOLD = RAG_THRESHOLD_RECALL if recall_mode else RAG_THRESHOLD_DEFAULT
+                    similar_docs = []
 
                 if DEBUG:
                     print("\n" + "=" * 80)
+                    print(f"[라우팅] {route_label} | scores={{{ROUTE_CHITCHAT}:{route_scores.get(ROUTE_CHITCHAT,0):.3f}, {ROUTE_KNOWLEDGE}:{route_scores.get(ROUTE_KNOWLEDGE,0):.3f}, {ROUTE_DANGER}:{route_scores.get(ROUTE_DANGER,0):.3f}}}")
                     print(f"[키워드 추출] {terms_for_debug if terms_for_debug else '(없음)'}")
                     print(f"[🔍 검색된 유사 문서 (Threshold >= {THRESHOLD})]")
                     for d in similar_docs_raw:
@@ -929,7 +1039,12 @@ async def run_chat_loop() -> None:
                         f"{format_documents(similar_docs)}\n{format_history(history)}"
                     ),
                 )
-                answer = await stream_answer(chain_inputs, char_name)
+                if ENABLE_DANGER_ROUTING and route_label == ROUTE_DANGER:
+                    answer = DANGER_FALLBACK_RESPONSE
+                    print(f"\n{char_name}: {answer}\n")
+                    print("=" * 80)
+                else:
+                    answer = await stream_answer(chain_inputs, char_name)
 
                 # 5) 사용자 메시지 저장
                 saved_user_msg = insert_message(
@@ -943,7 +1058,7 @@ async def run_chat_loop() -> None:
                 )
 
                 # 6) 사용자 메시지 임베딩 → documents 저장
-                if is_worth_storing(user_input):
+                if is_worth_storing(user_input, route_label=route_label):
                     insert_document(
                         conf_uid=conf_uid,
                         history_uid=history_uid,
@@ -973,10 +1088,12 @@ async def run_chat_loop() -> None:
                 )
 
                 # 8) 대화 요약 진행상태 출력 + 백그라운드 트리거
-                if DEBUG:
-                    last_id, pending_count = get_summary_progress(conf_uid, history_uid)
-                    print(f"[📊 요약 트리거] 마지막 요약 id={last_id}, 미처리 메시지={pending_count}개")
-                queue_summarization_job(conf_uid, history_uid)
+                # DANGER 응답은 후속 요약 맥락 오염을 막기 위해 요약 큐에서 제외
+                if (not ENABLE_DANGER_ROUTING) or route_label != ROUTE_DANGER:
+                    if DEBUG:
+                        last_id, pending_count = get_summary_progress(conf_uid, history_uid)
+                        print(f"[📊 요약 트리거] 마지막 요약 id={last_id}, 미처리 메시지={pending_count}개")
+                    queue_summarization_job(conf_uid, history_uid)
 
             except Exception as e:
                 print(f"\n[오류] {e}\n")
