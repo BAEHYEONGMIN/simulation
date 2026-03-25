@@ -62,6 +62,18 @@ RPC_MATCH       = "match_documents_gemini"
 SUMMARY_TRIGGER_COUNT = 10  # 이 터수 만큼 쌓이면 요약 실행
 SUMMARY_BRIDGE_COUNT  = 2   # 이음새로 가져올 이전 블록 마지막 대화 수
 
+# RAG 검색/주입 설정 (12 -> 8 -> 4 파이프라인)
+RAG_VECTOR_TOP_K = 12
+RAG_RERANK_TOP_K = 8
+RAG_PROMPT_DOCS_MAX = 4
+RAG_KEYWORD_POOL_LIMIT = 150
+RAG_THRESHOLD_RECALL = 0.34
+RAG_THRESHOLD_DEFAULT = 0.44
+
+# 프롬프트 컨텍스트 설정
+PROMPT_HISTORY_LIMIT = 12
+PROMPT_SUMMARY_LIMIT = 2
+
 # ─── 클라이언트 초기화 ────────────────────────────────────────
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -329,7 +341,10 @@ def fetch_messages_since(conf_uid: str, history_uid: str, after_id: int) -> list
 
 
 def fetch_bridge_messages(conf_uid: str, history_uid: str, up_to_id: int, n: int = 2) -> list[dict]:
-    """up_to_id 이하의 마지막 n개 대화(이음새)를 반환합니다."""
+    """up_to_id 이하의 마지막 n개 대화(이음새)를 반환합니다.
+
+    의도: 이전 요약 블록의 마지막 메시지(up_to_id) 자체를 포함해 경계 문맥을 보존.
+    """
     result = (
         supabase.schema(SCHEMA)
         .table(TABLE_CHAT)
@@ -447,6 +462,7 @@ JOSA_SUFFIXES = [
     "으로", "에서", "에게", "한테", "까지", "부터", "처럼", "보다",
     "이", "가", "은", "는", "을", "를", "와", "과", "도", "로", "에",
 ]
+JOSA_SUFFIXES_SORTED = sorted(JOSA_SUFFIXES, key=len, reverse=True)
 
 
 def is_recall_query(user_input: str) -> bool:
@@ -485,7 +501,8 @@ def is_worth_storing(user_input: str) -> bool:
 
 def normalize_keyword_token(token: str) -> str:
     t = token.strip().lower()
-    for suf in JOSA_SUFFIXES:
+    # 긴 조사부터 제거해야 ("으로" vs "로") 단절 오탐을 줄일 수 있음
+    for suf in JOSA_SUFFIXES_SORTED:
         if len(t) > len(suf) + 1 and t.endswith(suf):
             t = t[:-len(suf)]
             break
@@ -542,14 +559,27 @@ def extract_source_type(doc: dict) -> str:
     return ""
 
 
+def extract_related_message_id(doc: dict) -> int | None:
+    metadata = doc.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    raw = metadata.get("related_message_id")
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def rerank_documents(
     user_input: str,
     vector_docs: list[dict],
     keyword_pool_docs: list[dict],
     final_k: int = 6,
+    excluded_current_summary_end_ids: set[int] | None = None,
 ) -> list[dict]:
     recall_mode = is_recall_query(user_input)
     terms = extract_keyword_terms(user_input)
+    excluded_current_summary_end_ids = excluded_current_summary_end_ids or set()
 
     by_id: dict[int, dict] = {}
     vector_score_by_id: dict[int, float] = {}
@@ -591,12 +621,23 @@ def rerank_documents(
         if doc_id not in vector_score_by_id and doc_id not in keyword_top_ids:
             continue
 
+        source_type = extract_source_type(d)
+        related_message_id = extract_related_message_id(d)
+
+        # 현재 세션에서 이미 [이전 누적 요약]에 직접 주입한 최신 요약 2개는
+        # RAG 후보에서 제외해 중복 주입(요약 섹션 + 참고 문서)을 방지한다.
+        if (
+            source_type == "summary"
+            and related_message_id is not None
+            and related_message_id in excluded_current_summary_end_ids
+        ):
+            continue
+
         vscore = vector_score_by_id.get(doc_id, 0.0)
         kscore = d.get("_keyword_score")
         if kscore is None:
             kscore = keyword_match_score(d.get("content", ""), terms)
 
-        source_type = extract_source_type(d)
         source_boost = 0.0
         if source_type == "chat_message":
             source_boost = 0.14 if recall_mode else 0.04
@@ -637,7 +678,10 @@ def format_latest_summary(summary_row: dict | None) -> str:
 
 
 def format_recent_summaries(summary_rows: list[dict]) -> str:
-    """최근 요약 1~2개를 프롬프트에 넣기 위한 결합 포맷."""
+    """최근 요약 1~N개를 프롬프트에 넣기 위한 결합 포맷.
+
+    현재는 직전 2개를 넣어 topic 전환 직후 회상 안정성을 확보한다.
+    """
     if not summary_rows:
         return "(이전 누적 요약 없음)"
     return "\n\n".join(format_latest_summary(row) for row in summary_rows)
@@ -670,6 +714,7 @@ def format_documents(rows: list[dict]) -> str:
         source_type = r.get("source_type", "unknown")
         score = r.get("rank_score")
         if score is None:
+            # 방어 코드: 재랭크 경로를 거치지 않은 문서 포맷 호환
             score = round(r.get("similarity", 0), 3)
         parts.append(f"{date_part}[점수 {round(score, 3)}][{source_type}] {r['content']}")
     return "\n".join(parts)
@@ -752,6 +797,7 @@ async def stream_answer(chain_inputs: dict, char_name: str) -> str:
     chunks: list[str] = []
     print(f"\n{char_name}: ", end="", flush=True)
     async for chunk in chain.astream(chain_inputs):
+        # 방어 코드: 일부 모델/파서 조합에서 빈 청크가 올 수 있어 무시
         if not chunk:
             continue
         print(chunk, end="", flush=True)
@@ -801,16 +847,21 @@ async def run_chat_loop() -> None:
 
                 # 2) 유사 문서 검색 + 최근 대화 이력을 병렬로 조회
                 with ThreadPoolExecutor() as executor:
-                    future_docs = executor.submit(find_similar_documents, query_embedding, conf_uid, history_uid, 12)
-                    future_keyword_docs = executor.submit(fetch_recent_documents_for_keyword, conf_uid, history_uid, 150)
-                    future_history = executor.submit(fetch_recent_messages, conf_uid, history_uid, 12)
-                    future_summaries = executor.submit(fetch_recent_summaries_for_prompt, conf_uid, history_uid, 2)
+                    future_docs = executor.submit(find_similar_documents, query_embedding, conf_uid, history_uid, RAG_VECTOR_TOP_K)
+                    future_keyword_docs = executor.submit(fetch_recent_documents_for_keyword, conf_uid, history_uid, RAG_KEYWORD_POOL_LIMIT)
+                    future_history = executor.submit(fetch_recent_messages, conf_uid, history_uid, PROMPT_HISTORY_LIMIT)
+                    future_summaries = executor.submit(fetch_recent_summaries_for_prompt, conf_uid, history_uid, PROMPT_SUMMARY_LIMIT)
                     vector_docs_raw = future_docs.result()
                     keyword_pool_docs = future_keyword_docs.result()
                     history = future_history.result()
                     summary_rows = future_summaries.result()
 
                 previous_summary = format_recent_summaries(summary_rows)
+                excluded_summary_end_ids = {
+                    int(r["end_message_id"])
+                    for r in summary_rows
+                    if r.get("end_message_id") is not None
+                }
 
                 # 회상형 질문일수록 키워드 가중치를 높여 재랭크
                 recall_mode = is_recall_query(user_input)
@@ -819,12 +870,13 @@ async def run_chat_loop() -> None:
                     user_input=user_input,
                     vector_docs=vector_docs_raw,
                     keyword_pool_docs=keyword_pool_docs,
-                    final_k=8,
+                    final_k=RAG_RERANK_TOP_K,
+                    excluded_current_summary_end_ids=excluded_summary_end_ids,
                 )
 
                 # 재랭크 점수 하한선 적용
-                THRESHOLD = 0.34 if recall_mode else 0.44
-                similar_docs = [d for d in similar_docs_raw if d.get('rank_score', 0) >= THRESHOLD][:4]
+                THRESHOLD = RAG_THRESHOLD_RECALL if recall_mode else RAG_THRESHOLD_DEFAULT
+                similar_docs = [d for d in similar_docs_raw if d.get('rank_score', 0) >= THRESHOLD][:RAG_PROMPT_DOCS_MAX]
 
                 if DEBUG:
                     print("\n" + "=" * 80)
@@ -920,7 +972,10 @@ async def run_chat_loop() -> None:
                     metadata={"retrieved_docs": retrieved_info} if retrieved_info else None
                 )
 
-                # 8) 대화 요약 트리거 (백그라운드 비동기)
+                # 8) 대화 요약 진행상태 출력 + 백그라운드 트리거
+                if DEBUG:
+                    last_id, pending_count = get_summary_progress(conf_uid, history_uid)
+                    print(f"[📊 요약 트리거] 마지막 요약 id={last_id}, 미처리 메시지={pending_count}개")
                 queue_summarization_job(conf_uid, history_uid)
 
             except Exception as e:
@@ -940,9 +995,6 @@ def trigger_summarization_if_needed(conf_uid: str, history_uid: str, debug_log: 
 
     unprocessed = fetch_messages_since(conf_uid, history_uid, after_id=last_id)
 
-    if DEBUG and debug_log:
-        print(f"[📊 요약 트리거] 마지막 요약 id={last_id}, 미처리 메시지={len(unprocessed)}개")
-
     if len(unprocessed) < SUMMARY_TRIGGER_COUNT:
         return  # 아직 10턴 안 쌓임
 
@@ -952,13 +1004,24 @@ def trigger_summarization_if_needed(conf_uid: str, history_uid: str, debug_log: 
 def _run_summarization_job(conf_uid: str, history_uid: str) -> None:
     """요약 백그라운드 작업 본체."""
     try:
-        trigger_summarization_if_needed(conf_uid, history_uid, debug_log=True)
+        trigger_summarization_if_needed(conf_uid, history_uid, debug_log=False)
     except Exception as e:
         print(f"[요약 실패 — 다음 턴 재시도 예정] {e}")
     finally:
         key = (conf_uid, history_uid)
-        with _summary_state_lock:
-            _summary_inflight_sessions.discard(key)
+        try:
+            with _summary_state_lock:
+                _summary_inflight_sessions.discard(key)
+        except Exception as e:
+            print(f"[요약 상태 해제 실패] {e}")
+
+
+def get_summary_progress(conf_uid: str, history_uid: str) -> tuple[int, int]:
+    """요약 진행상태 조회: (마지막 요약 end_message_id, 미처리 메시지 수)."""
+    latest_summary = fetch_latest_summary(conf_uid, history_uid)
+    last_id = latest_summary["end_message_id"] if latest_summary else 0
+    unprocessed = fetch_messages_since(conf_uid, history_uid, after_id=last_id)
+    return last_id, len(unprocessed)
 
 
 def queue_summarization_job(conf_uid: str, history_uid: str) -> None:
@@ -1019,9 +1082,12 @@ def summarize_and_save(
         f"[새로 시작된 대화]\n{new_block_text}\n\n"
         "[출력 규칙]\n"
         "- 불릿 포인트(-) 3~5개로만 작성할 것\n"
-        "- 중요한 화자만의 정보(신상, 취향, 특이사항)를 중심으로 할 것\n"
+        "- 중요한 화자 정보(신상, 취향, 특이사항)를 중심으로 할 것\n"
         "- 인사말, 짧은 감탄사 등 무의미한 내용은 과감히 삭제할 것\n"
-        "- 한국어로만 작성할 것"
+        "- 한국어로만 작성할 것\n"
+        "- 대화에 명시된 사실만 쓰고, 추론/해석/의견을 추가하지 말 것\n"
+        "- '관심이 있다', '지식을 보유한다', '성향이다' 같은 단정 표현 금지\n"
+        "- 질문만 있었고 답변/행동이 없으면 사실로 확정하지 말 것"
     )
 
     # Flash-lite 모델로 요약 실행 (단순 압축 작업, Pro급 추론 불필요, 나중에 flash로 바꾸던가 하기)
