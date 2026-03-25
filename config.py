@@ -11,8 +11,9 @@ GEMINI_API_KEY_FREE = os.environ.get("GEMINI_API_KEY_FREE")
 # URL은 당장은 안필요함
 GEMINI_BASE_URL = os.environ.get("GEMINI_BASE_URL")
 
-CHAT_MODEL = os.environ.get("CHAT_MODEL", "gemini-3.1-pro-preview")
-SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "gemini-3.1-flash-lite-preview")
-MEMORY_MODEL = os.environ.get("MEMORY_MODEL", "gemini-3.1-pro-preview")
+CHAT_MODEL = os.environ.get("CHAT_MODEL", "gemini-2.5-flash")
+SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "gemini-2.5-flash")
+MEMORY_MODEL = os.environ.get("MEMORY_MODEL", "gemini-2.5-flash")
+TEST_MODEL = os.environ.get("TEST_MODEL", "gemini-3.1-pro-preview")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "models/gemini-embedding-001")
 LOCAL_EMBEDDING_MODEL = os.environ.get("LOCAL_EMBEDDING_MODEL","sentence-transformers/all-MiniLM-L6-v2")

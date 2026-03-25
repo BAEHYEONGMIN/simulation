@@ -14,9 +14,9 @@
   ↓
 (1) 임베딩 생성 (gemini-embedding-001, 768차원)
   ↓
-(2) 벡터 유사도 검색 (documents_gemini, Top-3, Threshold ≥ 0.75)
+(2) 하이브리드 검색 (벡터 + 키워드 후보 결합, source_type 가중치 재랭크)
   ↓
-(3) 최근 대화 이력 조회 (chat_messages, limit=8)
+(3) 최근 대화 이력 조회 (chat_messages, limit=12)
   ↓
 (4) 프롬프트 조립 (RESPONSE_POLICY + CHARACTER_PERSONA + 문서 + 이력 + 사용자 입력)
   ↓
@@ -363,6 +363,116 @@ async def chat_endpoint(request: ChatRequest):
     background_tasks.add_task(save_and_extract, ...)
 ```
 
+### 7. 컨텍스트 캐싱 최적화 (신규)
+
+현재는 매 턴마다 시스템 메시지 + 요약 + 문서 + 이력을 전부 다시 조립해 모델에 전달합니다.  
+아래 3단 캐시를 적용하면 비용과 지연을 동시에 줄일 수 있습니다.
+
+#### 캐시 레이어 설계
+
+```text
+[L1: 메모리 캐시 (프로세스 내부, 초고속)]
+- 키: (conf_uid, history_uid)
+- 값: latest_summary_text, recent_history_text, rendered_system_block
+- TTL: 30~120초
+- 용도: 같은 세션의 연속 턴에서 즉시 재사용
+
+[L2: Redis/외부 캐시 (멀티 인스턴스 공유)]
+- 키: hash(conf_uid, history_uid, summary_seq, last_message_id)
+- 값: prompt_context_bundle(JSON)
+- TTL: 5~30분
+- 용도: 서버 다중 인스턴스/재시작 환경에서 일관 재사용
+
+[L3: DB 원본 (Supabase)]
+- 항상 정합성의 기준
+- 캐시 미스/만료 시에만 조회
+```
+
+#### 캐시 대상 분리 원칙
+
+- **변화가 느린 컨텍스트(캐시 대상):**
+  - 시스템 정책/페르소나 텍스트
+  - 최신 누적 요약 (`summary_seq` 기준)
+- **변화가 빠른 컨텍스트(매 턴 계산):**
+  - 현재 사용자 입력
+  - 최근 원문 2~6턴(슬라이딩 윈도우)
+- **조건부 캐시:**
+  - RAG 검색 결과는 `route=KNOWLEDGE`일 때만 캐시(짧은 TTL)
+
+#### 무효화(Invalidation) 규칙
+
+```text
+1) conversation_summaries에 새 row INSERT
+   -> summary_seq 변경 감지
+   -> 해당 세션 summary 캐시 무효화
+
+2) chat_messages INSERT
+   -> last_message_id 변경
+   -> recent_history 캐시 무효화
+
+3) persona/policy 파일 변경 또는 버전 변경
+   -> global prompt cache 전부 무효화
+```
+
+#### 구현 단계 (권장 순서)
+
+1. L1 메모리 캐시부터 적용 (코드 최소 변경)
+2. 캐시 hit/miss 로그 계측 추가
+3. FastAPI 전환 시 Redis(L2) 확장
+4. 요약 갱신 이벤트 기반 무효화 자동화
+
+### 8. 하이브리드 검색/재랭크 (신규)
+
+순수 벡터 Top-K만으로는 "책 제목", "이름", "아까 뭐였지" 같은 회상 질문에서 원문 회수율이 흔들릴 수 있어, 검색 계층을 하이브리드로 보강합니다.
+
+#### 설계 요약
+
+```text
+입력 질의
+  -> 임베딩 벡터 후보 Top-K 조회
+  -> 최근 문서 풀에서 키워드 후보 추출
+  -> 의도 판별(회상형/일반형)
+  -> 가중치 합성 재랭크
+       final = w_vec * vector_score + w_key * keyword_score + source_type_boost
+  -> 상위 N개를 프롬프트 [참고 문서]에 주입
+```
+
+#### 가중치 정책
+
+- 회상형 질문(`제목`, `이름`, `뭐였지`, `기억` 등): `keyword` 비중 상향
+- 일반 질문: `vector` 비중 상향
+- `source_type` 우선순위:
+  - 회상형에서는 `chat_message` 가점, `summary`는 보조
+  - 일반형에서는 `summary`/`chat_message` 혼합 허용
+
+#### 기대 효과
+
+- 제목/고유명사 회수율 개선
+- 요약문만 맞고 원문을 놓치는 케이스 감소
+- 벡터 단독 랭킹의 문체 편향 완화
+
+### 9. 검색 후처리 정책 분리 (신규)
+
+검색 품질 관련 로직은 아래 2가지를 분리해서 운영합니다.
+
+#### 9-1. 재랭크 (Re-rank)
+
+- 목적: 후보 문서의 **순서**를 더 정확하게 재배치
+- 입력: 벡터 후보 + 키워드 후보
+- 출력: `rank_score` 기준 상위 문서
+- 적용 위치: 검색 결과 병합 직후
+
+#### 9-2. 필터 (Filter)
+
+- 목적: 상위 후보 중 **부적합 문서 제거**
+- 예시 기준:
+  - 점수 하한선 미달
+  - 질문 타입과 source_type 불일치
+  - 과도한 중복 문서
+- 적용 위치: 재랭크 이후, 프롬프트 주입 직전
+
+운영 원칙: 재랭크와 필터는 저장 단계(Document Gating)와 목적이 다르므로 분리 유지.
+
 ---
 
 ## 📋 구현 우선순위 체크리스트
@@ -396,8 +506,14 @@ async def chat_endpoint(request: ChatRequest):
   - [ ] KNOWLEDGE 경로: 전체 RAG 파이프라인 가동
         ~~ - [ ] DANGER 경로: 임계값 0.65, 안전 응답 리턴 ~~
 - [ ] 저장 가치 판단(Document Gating) 추가
-  - [ ] 룰 베이스 필터 (`is_worth_storing`)
+  - [x] 룰 베이스 필터 (`is_worth_storing`) 기본 적용 (2026-03-25 완료)
   - [ ] CHITCHAT 라우팅 결과 연계
+- [x] 하이브리드 검색/재랭크 적용 (`chat_new.py` 기준)
+  - [x] 벡터 후보 + 키워드 후보 결합 재랭크
+  - [x] 회상형 질의 의도 기반 가중치 적용
+  - [x] `source_type` 기반 점수 보정 (`chat_message` 우선)
+  - [x] 디버그 출력에 `vec/key/rank/source` 점수 분해 노출
+  - [ ] 검색 후처리 필터 기준 고도화 (재랭크와 분리 운영)
 
 ### Phase 3: 구조 개선 (2순위)
 
@@ -423,6 +539,19 @@ async def chat_endpoint(request: ChatRequest):
 - [x] 콘솔 출력 로그 파일 저장 (`langchain_test/logs/chat_session_YYYYMMDD.log`) (2026-03-25 완료)
 - [ ] 로그 레벨 분리 (`INFO`/`DEBUG`/`ERROR`) 및 JSON 구조화
 - [ ] 요청 단위 trace id 추가 (검색/프롬프트/요약 상관관계 추적)
+
+### 캐싱/성능 (신규 보강)
+
+- [ ] L1 인메모리 컨텍스트 캐시 도입 (`summary_seq`, `last_message_id` 키 기반)
+- [ ] 캐시 hit/miss/eviction 메트릭 로그 추가
+- [ ] 요약 INSERT 이후 summary 캐시 무효화 훅 추가
+- [ ] FastAPI 전환 시 Redis 기반 L2 캐시 확장
+
+### 검색 품질 (신규 보강)
+
+- [ ] 동의어 사전(`KEYWORD_SYNONYMS`) 운영 프로세스 정착
+- [ ] 회상형 질문 자동 평가셋 구축(제목/이름/숫자)
+- [ ] 하이브리드 랭킹 가중치 A/B 테스트 및 고정
 
 ---
 
@@ -455,4 +584,5 @@ async def chat_endpoint(request: ChatRequest):
 
 - **개선 반영:** 요약 트리거는 백그라운드로 넘겨 유저 입력 블로킹을 제거함.
 - **잔여 과제:** `insert_message`/`insert_document` 등 저장 경로는 아직 동기 호출이므로, 서버화 단계에서 `BackgroundTasks` + async DB로 전환 필요.
+- **추가 과제:** 컨텍스트 캐시(L1/L2) 도입으로 프롬프트 조립 및 DB 재조회 비용을 줄여 P95 지연을 추가로 낮출 것.
 - **향후 계획:** FastAPI 전환 시 `StreamingResponse(chain.astream(...))` + 후처리 태스크 분리를 표준 경로로 고정.

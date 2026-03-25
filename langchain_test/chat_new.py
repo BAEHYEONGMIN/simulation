@@ -35,7 +35,7 @@ from langchain_core.output_parsers import StrOutputParser
 from config import (
     SUPABASE_URL, SUPABASE_KEY,
     GEMINI_API_KEY_FREE,
-    CHAT_MODEL, EMBEDDING_MODEL,SUMMARY_MODEL
+    CHAT_MODEL, EMBEDDING_MODEL,SUMMARY_MODEL,TEST_MODEL
 )
 
 # 디버그 모드: True이면 검색 결과 및 프롬프트 전문을 터미널에 출력합니다.
@@ -44,6 +44,12 @@ DEBUG = True
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 _summary_state_lock = threading.Lock()
 _summary_inflight_sessions: set[tuple[str, str]] = set()
+
+# Provider Context Caching (기본 OFF)
+# - 현재는 비용/히트율 검증 전이라 비활성화 상태 유지
+# - 추후 실험 시 플래그만 ON 하여 적용 범위/비용 측정
+ENABLE_PROVIDER_CONTEXT_CACHE = False
+CONTEXT_CACHE_MIN_TOKENS = 32768
 
 # ─── DB 상수 ─────────────────────────────────────────────────
 SCHEMA          = "chatbot"
@@ -105,6 +111,28 @@ def open_session_log_file() -> tuple[str, object]:
     return log_path, log_fp
 
 
+def maybe_prepare_context_cache(
+    *,
+    conf_uid: str,
+    history_uid: str,
+    system_block_text: str,
+) -> str | None:
+    """Provider context cache 준비용 스텁.
+
+    현재는 의도적으로 OFF이며(None 반환), 추후 공급자 SDK 캐시 API를 연결한다.
+    """
+    if not ENABLE_PROVIDER_CONTEXT_CACHE:
+        return None
+
+    # TODO: 실제 토큰 계산기로 대체
+    rough_tokens = max(1, len(system_block_text) // 4)
+    if rough_tokens < CONTEXT_CACHE_MIN_TOKENS:
+        return None
+
+    # TODO: Provider cache create/get 호출 후 cache_id 반환
+    return None
+
+
 # ─── 임베딩 ──────────────────────────────────────────────────
 def generate_embedding(text: str) -> list[float]:
     result = genai_client.models.embed_content(
@@ -134,9 +162,14 @@ def fetch_recent_messages(conf_uid: str, history_uid: str, limit: int = 10) -> l
 def find_similar_documents(
     query_embedding: list[float],
     conf_uid: str,
-    top_k: int = 3,
+    history_uid: str | None = None,
+    top_k: int = 20,
 ) -> list[dict]:
     """벡터 유사도 검색"""
+    filter_obj = {"conf_uid": conf_uid}
+    if history_uid:
+        filter_obj["history_uid"] = history_uid
+
     result = (
         supabase.schema(SCHEMA)
         .rpc(
@@ -144,9 +177,28 @@ def find_similar_documents(
             {
                 "query_embedding": query_embedding,
                 "match_count": top_k,
-                "filter": {"conf_uid": conf_uid},
+                "filter": filter_obj,
             },
         )
+        .execute()
+    )
+    return result.data or []
+
+
+def fetch_recent_documents_for_keyword(
+    conf_uid: str,
+    history_uid: str,
+    limit: int = 150,
+) -> list[dict]:
+    """키워드 보정용 후보 문서 풀 조회."""
+    result = (
+        supabase.schema(SCHEMA)
+        .table(TABLE_DOCUMENTS)
+        .select("id, content, metadata, created_at")
+        .eq("metadata->>conf_uid", conf_uid)
+        .eq("metadata->>history_uid", history_uid)
+        .order("created_at", desc=True)
+        .limit(limit)
         .execute()
     )
     return result.data or []
@@ -243,6 +295,22 @@ def fetch_latest_summary(conf_uid: str, history_uid: str) -> dict | None:
         .execute()
     )
     return result.data[0] if result.data else None
+
+
+def fetch_recent_summaries_for_prompt(conf_uid: str, history_uid: str, limit: int = 2) -> list[dict]:
+    """프롬프트 주입용 최근 요약본 n개 조회 (최신순 조회 후 시간순으로 반환)."""
+    result = (
+        supabase.schema(SCHEMA)
+        .table(TABLE_SUMMARIES)
+        .select("id, summary_type, summary_text, start_message_id, end_message_id, covered_message_count, summary_seq, created_at")
+        .eq("conf_uid", conf_uid)
+        .eq("history_uid", history_uid)
+        .order("summary_seq", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    rows = result.data or []
+    return list(reversed(rows))
 
 
 def fetch_messages_since(conf_uid: str, history_uid: str, after_id: int) -> list[dict]:
@@ -357,6 +425,195 @@ def normalize_summary_text(text: str) -> str:
     return "\n".join(normalized[:5])
 
 
+RECALL_HINT_PATTERNS = [
+    "뭐였지", "뭐였더라", "기억", "기억나", "제목", "이름",
+    "아까", "전에", "읽었", "읽었다", "말했", "추천",
+]
+
+KEYWORD_STOPWORDS = {
+    "수아야", "내가", "아까", "그", "그거", "이거", "저거", "뭐",
+    "뭐지", "뭐였지", "좀", "그리고", "오늘", "우리", "너는", "나는",
+}
+
+KEYWORD_SYNONYMS = {
+    "책": ["소설", "작품", "도서"],
+    "소설": ["책", "작품"],
+    "제목": ["이름", "타이틀"],
+    "이름": ["제목"],
+}
+
+ONE_CHAR_KEYWORDS = {"책"}
+JOSA_SUFFIXES = [
+    "으로", "에서", "에게", "한테", "까지", "부터", "처럼", "보다",
+    "이", "가", "은", "는", "을", "를", "와", "과", "도", "로", "에",
+]
+
+
+def is_recall_query(user_input: str) -> bool:
+    text = (user_input or "").lower()
+    return any(p in text for p in RECALL_HINT_PATTERNS)
+
+
+NOISE_EXACT_PATTERNS = {
+    "ㅋ", "ㅋㅋ", "ㅋㅋㅋ", "ㅎ", "ㅎㅎ", "ㅎㅎㅎ",
+    "ㅇㅇ", "ㄴㄴ", "ㅜㅜ", "ㅠㅠ", "...", "..", ";;",
+}
+
+NOISE_PREFIX_PATTERNS = ("ㅋ", "ㅎ")
+
+
+def is_worth_storing(user_input: str) -> bool:
+    """documents_gemini 저장 가치 판단 (룰 베이스)."""
+    text = (user_input or "").strip().lower()
+    if not text:
+        return False
+
+    # 너무 짧은 입력 제외
+    if len(text) <= 3:
+        return False
+
+    # 완전 노이즈 패턴 제외
+    if text in NOISE_EXACT_PATTERNS:
+        return False
+
+    # 반복 웃음/감탄 단문 제외
+    if text.startswith(NOISE_PREFIX_PATTERNS) and len(text) <= 6:
+        return False
+
+    return True
+
+
+def normalize_keyword_token(token: str) -> str:
+    t = token.strip().lower()
+    for suf in JOSA_SUFFIXES:
+        if len(t) > len(suf) + 1 and t.endswith(suf):
+            t = t[:-len(suf)]
+            break
+    return t
+
+
+def extract_keyword_terms(user_input: str) -> list[str]:
+    base_tokens = re.findall(r"[0-9a-zA-Z가-힣]+", (user_input or "").lower())
+    terms = []
+
+    for token in base_tokens:
+        token = normalize_keyword_token(token)
+        if not token:
+            continue
+        if token in KEYWORD_STOPWORDS:
+            continue
+        if len(token) < 2 and token not in ONE_CHAR_KEYWORDS and token not in KEYWORD_SYNONYMS:
+            continue
+        terms.append(token)
+        for syn in KEYWORD_SYNONYMS.get(token, []):
+            terms.append(syn)
+
+    # 중복 제거 + 순서 유지
+    seen = set()
+    deduped = []
+    for t in terms:
+        if t not in seen:
+            deduped.append(t)
+            seen.add(t)
+    return deduped
+
+
+def keyword_match_score(content: str, terms: list[str]) -> float:
+    if not terms:
+        return 0.0
+
+    text = (content or "").lower()
+    if not text:
+        return 0.0
+
+    hit_terms = [t for t in terms if t in text]
+    coverage = len(hit_terms) / len(terms)
+
+    # 긴 토큰(3글자 이상)이 매칭되면 더 강하게 점수 반영
+    long_hit_bonus = 0.12 if any(len(t) >= 3 for t in hit_terms) else 0.0
+    score = min(1.0, (coverage * 0.88) + long_hit_bonus)
+    return round(score, 4)
+
+
+def extract_source_type(doc: dict) -> str:
+    metadata = doc.get("metadata")
+    if isinstance(metadata, dict):
+        return (metadata.get("source_type") or "").strip()
+    return ""
+
+
+def rerank_documents(
+    user_input: str,
+    vector_docs: list[dict],
+    keyword_pool_docs: list[dict],
+    final_k: int = 6,
+) -> list[dict]:
+    recall_mode = is_recall_query(user_input)
+    terms = extract_keyword_terms(user_input)
+
+    by_id: dict[int, dict] = {}
+    vector_score_by_id: dict[int, float] = {}
+
+    for d in vector_docs:
+        doc_id = d.get("id")
+        if doc_id is None:
+            continue
+        by_id[doc_id] = dict(d)
+        vector_score_by_id[doc_id] = float(d.get("similarity", 0.0) or 0.0)
+
+    keyword_candidates = []
+    for d in keyword_pool_docs:
+        doc_id = d.get("id")
+        if doc_id is None:
+            continue
+        kscore = keyword_match_score(d.get("content", ""), terms)
+        if kscore <= 0:
+            continue
+        candidate = dict(d)
+        candidate["_keyword_score"] = kscore
+        keyword_candidates.append(candidate)
+        if doc_id not in by_id:
+            by_id[doc_id] = dict(candidate)
+        else:
+            # metadata 등 누락 필드 보강
+            if not by_id[doc_id].get("metadata") and candidate.get("metadata"):
+                by_id[doc_id]["metadata"] = candidate.get("metadata")
+
+    # 키워드 강한 후보 상위만 병합
+    keyword_candidates.sort(key=lambda x: x.get("_keyword_score", 0.0), reverse=True)
+    keyword_top_ids = {d["id"] for d in keyword_candidates[:20]}
+
+    vector_w = 0.45 if recall_mode else 0.72
+    keyword_w = 0.55 if recall_mode else 0.28
+
+    scored = []
+    for doc_id, d in by_id.items():
+        if doc_id not in vector_score_by_id and doc_id not in keyword_top_ids:
+            continue
+
+        vscore = vector_score_by_id.get(doc_id, 0.0)
+        kscore = d.get("_keyword_score")
+        if kscore is None:
+            kscore = keyword_match_score(d.get("content", ""), terms)
+
+        source_type = extract_source_type(d)
+        source_boost = 0.0
+        if source_type == "chat_message":
+            source_boost = 0.14 if recall_mode else 0.04
+        elif source_type == "summary":
+            source_boost = -0.06 if recall_mode else 0.01
+
+        rank_score = (vector_w * vscore) + (keyword_w * float(kscore)) + source_boost
+        d["rank_score"] = round(rank_score, 4)
+        d["keyword_score"] = round(float(kscore), 4)
+        d["similarity"] = round(float(vscore), 4)
+        d["source_type"] = source_type or "unknown"
+        scored.append(d)
+
+    scored.sort(key=lambda x: x.get("rank_score", 0.0), reverse=True)
+    return scored[:final_k]
+
+
 def format_latest_summary(summary_row: dict | None) -> str:
     """프롬프트 주입용 최신 누적 요약 포맷"""
     if not summary_row:
@@ -377,6 +634,13 @@ def format_latest_summary(summary_row: dict | None) -> str:
         f"[range={start_id}~{end_id}]\n"
         f"{summary_text}"
     )
+
+
+def format_recent_summaries(summary_rows: list[dict]) -> str:
+    """최근 요약 1~2개를 프롬프트에 넣기 위한 결합 포맷."""
+    if not summary_rows:
+        return "(이전 누적 요약 없음)"
+    return "\n\n".join(format_latest_summary(row) for row in summary_rows)
 
 
 
@@ -403,7 +667,11 @@ def format_documents(rows: list[dict]) -> str:
     for r in rows:
         date_str = r.get('created_at', '')[:10] if r.get('created_at') else ''
         date_part = f"[{date_str}] " if date_str else ""
-        parts.append(f"{date_part}[유사도 {round(r.get('similarity', 0), 3)}] {r['content']}")
+        source_type = r.get("source_type", "unknown")
+        score = r.get("rank_score")
+        if score is None:
+            score = round(r.get("similarity", 0), 3)
+        parts.append(f"{date_part}[점수 {round(score, 3)}][{source_type}] {r['content']}")
     return "\n".join(parts)
 
 RESPONSE_POLICY = """
@@ -493,7 +761,7 @@ async def stream_answer(chain_inputs: dict, char_name: str) -> str:
     return "".join(chunks).strip()
 
 
-def run_chat_loop() -> None:
+async def run_chat_loop() -> None:
     conf_uid    = "sua_test_003" # 대화 요약 테스트용
     history_uid = "session_001"
     user_id     = "user_baemin"
@@ -515,7 +783,7 @@ def run_chat_loop() -> None:
 
     try:
         while True:
-            user_input = input("나: ").strip()
+            user_input = (await asyncio.to_thread(input, "나: ")).strip()
             print(f"[사용자 입력] {user_input}")
 
             if user_input.lower() in {"exit", "quit", "q"}:
@@ -533,28 +801,44 @@ def run_chat_loop() -> None:
 
                 # 2) 유사 문서 검색 + 최근 대화 이력을 병렬로 조회
                 with ThreadPoolExecutor() as executor:
-                    future_docs = executor.submit(find_similar_documents, query_embedding, conf_uid, 3)
+                    future_docs = executor.submit(find_similar_documents, query_embedding, conf_uid, history_uid, 12)
+                    future_keyword_docs = executor.submit(fetch_recent_documents_for_keyword, conf_uid, history_uid, 150)
                     future_history = executor.submit(fetch_recent_messages, conf_uid, history_uid, 12)
-                    future_summary = executor.submit(fetch_latest_summary, conf_uid, history_uid)
-                    similar_docs_raw = future_docs.result()
+                    future_summaries = executor.submit(fetch_recent_summaries_for_prompt, conf_uid, history_uid, 2)
+                    vector_docs_raw = future_docs.result()
+                    keyword_pool_docs = future_keyword_docs.result()
                     history = future_history.result()
-                    latest_summary = future_summary.result()
+                    summary_rows = future_summaries.result()
 
-                previous_summary = format_latest_summary(latest_summary)
+                previous_summary = format_recent_summaries(summary_rows)
 
-                # 유사도 하한선(Threshold) 적용
-                THRESHOLD = 0.75
-                similar_docs = [d for d in similar_docs_raw if d.get('similarity', 0) >= THRESHOLD]
+                # 회상형 질문일수록 키워드 가중치를 높여 재랭크
+                recall_mode = is_recall_query(user_input)
+                terms_for_debug = extract_keyword_terms(user_input)
+                similar_docs_raw = rerank_documents(
+                    user_input=user_input,
+                    vector_docs=vector_docs_raw,
+                    keyword_pool_docs=keyword_pool_docs,
+                    final_k=8,
+                )
+
+                # 재랭크 점수 하한선 적용
+                THRESHOLD = 0.34 if recall_mode else 0.44
+                similar_docs = [d for d in similar_docs_raw if d.get('rank_score', 0) >= THRESHOLD][:4]
 
                 if DEBUG:
                     print("\n" + "=" * 80)
+                    print(f"[키워드 추출] {terms_for_debug if terms_for_debug else '(없음)'}")
                     print(f"[🔍 검색된 유사 문서 (Threshold >= {THRESHOLD})]")
                     for d in similar_docs_raw:
-                        sim = d.get('similarity', 0)
-                        if sim >= THRESHOLD:
-                            print(f" ✅ [유사도 {sim:.3f}] {d['content']}")
+                        rank_score = d.get("rank_score", 0)
+                        sim = d.get("similarity", 0)
+                        kscore = d.get("keyword_score", 0)
+                        source_type = d.get("source_type", "unknown")
+                        if rank_score >= THRESHOLD:
+                            print(f" ✅ [점수 {rank_score:.3f} | vec {sim:.3f} | key {kscore:.3f} | {source_type}] {d['content']}")
                         else:
-                            print(f" ❌ [유사도 {sim:.3f}] (버려짐) {d['content']}")
+                            print(f" ❌ [점수 {rank_score:.3f} | vec {sim:.3f} | key {kscore:.3f} | {source_type}] (버려짐) {d['content']}")
                     if not similar_docs_raw:
                         print(" - 검색된 문서 없음")
                     print("=" * 80)
@@ -585,7 +869,15 @@ def run_chat_loop() -> None:
                     "history": format_history(history),
                     "user_input": user_input,
                 }
-                answer = asyncio.run(stream_answer(chain_inputs, char_name))
+                _cache_id = maybe_prepare_context_cache(
+                    conf_uid=conf_uid,
+                    history_uid=history_uid,
+                    system_block_text=(
+                        f"{RESPONSE_POLICY}\n{CHARACTER_PERSONA}\n{previous_summary}\n"
+                        f"{format_documents(similar_docs)}\n{format_history(history)}"
+                    ),
+                )
+                answer = await stream_answer(chain_inputs, char_name)
 
                 # 5) 사용자 메시지 저장
                 saved_user_msg = insert_message(
@@ -599,14 +891,17 @@ def run_chat_loop() -> None:
                 )
 
                 # 6) 사용자 메시지 임베딩 → documents 저장
-                insert_document(
-                    conf_uid=conf_uid,
-                    history_uid=history_uid,
-                    speaker_id=user_id,
-                    content=user_input,
-                    embedding=query_embedding,
-                    related_message_id=saved_user_msg["id"],
-                )
+                if is_worth_storing(user_input):
+                    insert_document(
+                        conf_uid=conf_uid,
+                        history_uid=history_uid,
+                        speaker_id=user_id,
+                        content=user_input,
+                        embedding=query_embedding,
+                        related_message_id=saved_user_msg["id"],
+                    )
+                elif DEBUG:
+                    print("[GATING] documents 저장 스킵: 저가치 입력")
 
                 # 7) AI 응답 메시지 저장 (RAG 출처 트래킹 포함)
                 retrieved_info = [
@@ -638,14 +933,14 @@ def run_chat_loop() -> None:
 
 
 # ─── 대화 요약 서비스 ─────────────────────────────────────────
-def trigger_summarization_if_needed(conf_uid: str, history_uid: str) -> None:
+def trigger_summarization_if_needed(conf_uid: str, history_uid: str, debug_log: bool = True) -> None:
     """AI 답변 저장 직후마다 호출됨. 마지막 요약 이후 10턴이 쌓이면 요약 실행."""
     latest_summary = fetch_latest_summary(conf_uid, history_uid)
     last_id = latest_summary["end_message_id"] if latest_summary else 0
 
     unprocessed = fetch_messages_since(conf_uid, history_uid, after_id=last_id)
 
-    if DEBUG:
+    if DEBUG and debug_log:
         print(f"[📊 요약 트리거] 마지막 요약 id={last_id}, 미처리 메시지={len(unprocessed)}개")
 
     if len(unprocessed) < SUMMARY_TRIGGER_COUNT:
@@ -657,7 +952,7 @@ def trigger_summarization_if_needed(conf_uid: str, history_uid: str) -> None:
 def _run_summarization_job(conf_uid: str, history_uid: str) -> None:
     """요약 백그라운드 작업 본체."""
     try:
-        trigger_summarization_if_needed(conf_uid, history_uid)
+        trigger_summarization_if_needed(conf_uid, history_uid, debug_log=True)
     except Exception as e:
         print(f"[요약 실패 — 다음 턴 재시도 예정] {e}")
     finally:
@@ -764,4 +1059,4 @@ def summarize_and_save(
 
 
 if __name__ == "__main__":
-    run_chat_loop()
+    asyncio.run(run_chat_loop())
