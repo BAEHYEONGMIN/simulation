@@ -551,7 +551,7 @@ async def chat_endpoint(request: ChatRequest):
   - [x] 요약 출력 마크다운 흔들림 정규화(저장 전 후처리) (2026-03-25 완료)
   - [x] 요약 프롬프트에 과추론 금지 규칙 강화(명시 사실만 요약) (2026-03-25 완료)
   - [x] 프롬프트 주입용 요약 조회: 최신 1개 -> 최근 2개로 확장 (2026-03-25 완료)
-- [ ] 장기 기억 추출 서비스 모듈 분리 (`memory_extractor.py`)
+- [x] 장기 기억 추출 서비스 모듈 분리 (`chat_modules/memory_extractor.py`) (2026-03-26 완료)
   - [x] Pydantic 스키마 정의 (`MemoryExtraction`) — `chat_new.py` 1차 적용 완료
   - [x] `with_structured_output`으로 JSON 강제 파싱 — `chat_new.py` 1차 적용 완료
   - [x] `user_memories` 테이블 UPSERT + 충돌 해소 로직 — `chat_new.py` 1차 적용 완료
@@ -559,7 +559,7 @@ async def chat_endpoint(request: ChatRequest):
   - [x] 장기 기억 추출 백그라운드 큐 연동
   - [x] 5턴 배치 트리거 + 블록 게이팅(잡담/질문 블록 스킵) 적용
   - [x] 백그라운드 캐치업 while + 1회 최대 3블록 제한 적용
-- [ ] 시맨틱 라우팅 모듈 분리 (`routing.py`)
+- [x] 시맨틱 라우팅 모듈 분리 (`chat_modules/routing.py`) (2026-03-26 완료)
   - [x] `router_samples.json` 작성 (카테고리별 샘플 운영 중)
   - [x] CHITCHAT 경로: RAG 스킵, 최근 이력 포함하여 LLM 직발 (`chat_new.py` 구현 완료)
   - [x] KNOWLEDGE 경로: 전체 RAG 파이프라인 가동 (`chat_new.py` 구현 완료)

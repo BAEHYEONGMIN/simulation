@@ -1,4 +1,4 @@
-from collections.abc import Callable
+﻿from collections.abc import Callable
 
 try:
     from chat_constants import SCHEMA, TABLE_CHAT, FETCH_HISTORY_MULTIPLIER
@@ -63,5 +63,77 @@ def insert_message(
         .execute()
     )
     if not result.data:
-        raise RuntimeError(f"{TABLE_CHAT} 저장 실패")
+        raise RuntimeError(f"{TABLE_CHAT} insert failed")
     return result.data[0]
+
+
+def fetch_messages_since(
+    conf_uid: str,
+    history_uid: str,
+    after_id: int,
+    exclude_fn: Callable[[dict], bool] | None = None,
+) -> list[dict]:
+    """Return all messages after after_id in ascending id order."""
+    result = (
+        supabase.schema(SCHEMA)
+        .table(TABLE_CHAT)
+        .select("id, role, speaker_id, display_name, content, created_at, metadata")
+        .eq("conf_uid", conf_uid)
+        .eq("history_uid", history_uid)
+        .gt("id", after_id)
+        .order("id", desc=False)
+        .execute()
+    )
+    rows = result.data or []
+    if exclude_fn is not None:
+        rows = [r for r in rows if not exclude_fn(r)]
+    return rows
+
+
+def fetch_user_messages_since(
+    conf_uid: str,
+    history_uid: str,
+    after_id: int,
+    exclude_fn: Callable[[dict], bool] | None = None,
+) -> list[dict]:
+    """Return user(human) messages after after_id in ascending id order."""
+    result = (
+        supabase.schema(SCHEMA)
+        .table(TABLE_CHAT)
+        .select("id, role, speaker_id, display_name, content, created_at, metadata")
+        .eq("conf_uid", conf_uid)
+        .eq("history_uid", history_uid)
+        .eq("role", "human")
+        .gt("id", after_id)
+        .order("id", desc=False)
+        .execute()
+    )
+    rows = result.data or []
+    if exclude_fn is not None:
+        rows = [r for r in rows if not exclude_fn(r)]
+    return rows
+
+
+def fetch_bridge_messages(
+    conf_uid: str,
+    history_uid: str,
+    up_to_id: int,
+    n: int = 2,
+    exclude_fn: Callable[[dict], bool] | None = None,
+) -> list[dict]:
+    """Return last n bridge messages up to up_to_id."""
+    result = (
+        supabase.schema(SCHEMA)
+        .table(TABLE_CHAT)
+        .select("id, role, display_name, content, created_at, metadata")
+        .eq("conf_uid", conf_uid)
+        .eq("history_uid", history_uid)
+        .lte("id", up_to_id)
+        .order("id", desc=True)
+        .limit(max(n * 3, n))
+        .execute()
+    )
+    rows = list(reversed(result.data or []))
+    if exclude_fn is not None:
+        rows = [r for r in rows if not exclude_fn(r)]
+    return rows[-n:] if len(rows) > n else rows

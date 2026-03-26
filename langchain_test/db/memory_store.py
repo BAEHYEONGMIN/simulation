@@ -1,4 +1,4 @@
-try:
+﻿try:
     from chat_constants import (
         SCHEMA,
         TABLE_MEMORIES,
@@ -42,6 +42,21 @@ def fetch_active_memories(
     return result.data or []
 
 
+def get_last_processed_user_id_from_memories(conf_uid: str, history_uid: str) -> int:
+    result = (
+        supabase.schema(SCHEMA)
+        .table(TABLE_MEMORIES)
+        .select("source_message_id")
+        .eq("conf_uid", conf_uid)
+        .eq("source_history_uid", history_uid)
+        .gt("source_message_id", 0)
+        .order("source_message_id", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return int(result.data[0]["source_message_id"]) if result.data else 0
+
+
 def normalize_memory_value(memory_key: str, memory_value: str) -> str:
     value = (memory_value or "").strip()
     if not value:
@@ -61,6 +76,7 @@ def upsert_user_memory(
     memory_key: str,
     memory_value: str,
     confidence: float = 0.75,
+    source_history_uid: str | None = None,
     source_message_id: int | None = None,
 ) -> None:
     memory_type = (memory_type or "").strip()
@@ -101,6 +117,7 @@ def upsert_user_memory(
             "importance": DEFAULT_IMPORTANCE_BY_TYPE.get(memory_type, 5),
             "confidence": confidence,
             "evidence_count": 1,
+            "source_history_uid": source_history_uid,
             "source_message_id": source_message_id or 0,
             "first_seen_at": now,
             "last_seen_at": now,
@@ -126,6 +143,7 @@ def upsert_user_memory(
             "evidence_count": old_evidence + 1,
             "last_seen_at": now,
             "confidence": max(confidence, 0.7),
+            "source_history_uid": source_history_uid,
             "source_message_id": source_message_id,
             "updated_at": now,
         }
@@ -133,6 +151,8 @@ def upsert_user_memory(
         patch = {
             "evidence_count": old_evidence + 1,
             "last_seen_at": now,
+            "source_history_uid": source_history_uid,
+            "source_message_id": source_message_id,
             "updated_at": now,
         }
 
