@@ -1,0 +1,32 @@
+﻿너의 작업은 대화에서 장기 기억 후보를 추출하는 것이다.
+기억은 사용자의 안정적인 정보만 포함하고, 일회성 감탄/질문/임시 상태는 제외한다.
+이미 저장된 기억과 중복되는 항목은 다시 만들지 말고, 신규/변경 정보만 뽑아라.
+
+[허용 memory_type]
+- profile, style, preference, taboo, relationship, fact
+
+[허용 memory_key]
+- profile: user_name
+- style: preferred_speech_style, preferred_response_length
+- preference: favorite_genre, favorite_topic
+- taboo: disliked_topic, avoid_behavior
+- relationship: attitude_to_character, closeness_level
+- fact: current_activity, current_goal
+
+[중요 규칙]
+- 대화에 명시된 사실만 추출할 것
+- 질문만 존재하면 기억으로 저장하지 말 것
+- 추론/해석/과장 금지
+- 같은 의미의 중복 항목 생성 금지
+
+[기존 장기 기억]
+{prior_memories}
+
+[이번 추출 대상 사용자 발화 블록(최근 5턴)]
+{block_user_inputs}
+
+[최근 대화]
+{recent_dialogue}
+
+[출력]
+- is_memory_worthy와 memories만 반환할 것

@@ -620,11 +620,11 @@ async def chat_endpoint(request: ChatRequest):
 
 ### Phase 3: 구조 개선 (2순위)
 
-- [ ] DB 코드 관심사 분리 (`db/` 디렉토리) — 순수 Python 모듈 분리
-  - [ ] `db/chat_history.py`: `fetch_recent_messages`, `insert_message` 이사
-  - [ ] `db/document_store.py`: `find_similar_documents`, `insert_document` 이사
-  - [ ] `db/memory_store.py`: `user_memories` CRUD
-  - [ ] `db/summary_store.py`: `conversation_summaries` CRUD
+- [x] DB 코드 관심사 분리 (db/ 디렉토리) — 순수 Python 모듈 분리 (2026-03-26 완료)
+  - [x] db/chat_history.py: fetch_recent_messages, insert_message 이사
+  - [x] db/document_store.py: find_similar_documents, insert_document 이사
+  - [x] db/memory_store.py: user_memories CRUD
+  - [x] db/summary_store.py: conversation_summaries CRUD
 - [ ] 비동기 전환 (부분 완료)
   - [x] `invoke` → `astream` (CLI 스트리밍 응답) (2026-03-25 완료)
   - [x] 이벤트 루프 단일화 (`asyncio.run` 1회, 턴 내부 재호출 제거) (2026-03-25 완료)
@@ -660,6 +660,7 @@ async def chat_endpoint(request: ChatRequest):
 - [ ] 회상형 질문 자동 평가셋 구축(제목/이름/숫자) — **보류(대화 데이터 충분 축적 후 진행)**
 - [ ] 하이브리드 랭킹 가중치 A/B 테스트 및 고정 — **보류(평가셋 안정화 이후)**
 - [x] Evals 러너 구축 (`eval_runner.py`) (done 2026-03-26)
+  - [x] 검증 정책: eval_runner는 상시 필수 아님 (라우팅/검색 로직 변경 시 또는 릴리즈 전 실행)
   - [x] `eval_samples.json` schema finalized (`eval_mode`, `seed_conf_uid`, `seed_history_uid`, `expected_route`, `expected_doc_keywords`, `forbidden_doc_keywords`, `expected_answer_keywords`) (done 2026-03-26)
   - [ ] 라우팅 정확도/검색 노이즈율/답변 키워드 커버리지 리포트 출력 — **보류(데이터 축적 후)**
   - [ ] 튜닝 반려 기준 명시 (라우팅 정확도 하락, 노이즈율 상승 시 반려) — **보류(데이터 축적 후)**
@@ -668,7 +669,7 @@ async def chat_endpoint(request: ChatRequest):
 ### 프롬프트 구조 (정합성 보강)
 
 - [x] `MessagesPlaceholder` 기반 메시지 객체 이력 주입 전환
-- [ ] `RESPONSE_POLICY`/`CHARACTER_PERSONA` 파일 분리(`prompts/*.txt`) 및 앱 시작 시 1회 로딩
+- [x] RESPONSE_POLICY/CHARACTER_PERSONA 파일 분리(prompts/*.txt) 및 앱 시작 시 1회 로딩 (2026-03-26 완료)
 
 ---
 
@@ -781,3 +782,5 @@ async def chat_endpoint(request: ChatRequest):
   - `error_type`, `stage`, `retry_count`, `request_id`
 - 운영 알림 조건
   - 동일 오류 연속 N회 이상 시 경고
+
+---
