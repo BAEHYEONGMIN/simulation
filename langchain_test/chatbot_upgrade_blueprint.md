@@ -101,7 +101,9 @@
 │    (1) chat_messages에 유저/AI 메시지 INSERT                      │
 │    (2) 저장 가치 판단(Gating) 후 documents_gemini에 임베딩 INSERT   │
 │    (3) 대화 요약 갱신 트리거 [Flash 모델] → last_processed_id 기반  │
+│        (캐치업 while, 1회 최대 3블록)                              │
 │    (4) 장기 기억 추출 트리거 [Pro 모델] → 5턴마다                    │
+│        (캐치업 while, 1회 최대 3블록)                              │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -540,6 +542,7 @@ async def chat_endpoint(request: ChatRequest):
 
 - [x] 대화 요약 압축 서비스 핵심 구현 (`chat_new.py` 기준)
   - [x] `last_processed_id` 기반 10턴 트리거 (2026-03-24 완료)
+  - [x] 백그라운드 캐치업 while + 1회 최대 3블록 제한 적용
   - [x] 이전 요약본 + 이음새 대화 2개 + 새 블록 누적 요약 로직 (2026-03-24 완료)
   - [x] `conversation_summaries` 테이블 INSERT + 벡터화 저장 (2026-03-25 완료)
   - [x] 메인 채팅 프롬프트에 `[이전 요약]` 섹션 조회 및 주입 (2026-03-25 완료)
@@ -548,15 +551,20 @@ async def chat_endpoint(request: ChatRequest):
   - [x] 요약 출력 마크다운 흔들림 정규화(저장 전 후처리) (2026-03-25 완료)
   - [x] 요약 프롬프트에 과추론 금지 규칙 강화(명시 사실만 요약) (2026-03-25 완료)
   - [x] 프롬프트 주입용 요약 조회: 최신 1개 -> 최근 2개로 확장 (2026-03-25 완료)
-- [ ] 장기 기억 추출 서비스 구현 (`memory_extractor.py`)
-  - [ ] Pydantic 스키마 정의 (`MemoryExtraction`)
-  - [ ] `with_structured_output`으로 JSON 강제 파싱
-  - [ ] `user_memories` 테이블 UPSERT + 충돌 해소 로직
-  - [ ] 프롬프트에 `[사용자 장기 기억]` 섹션 추가
+- [ ] 장기 기억 추출 서비스 모듈 분리 (`memory_extractor.py`)
+  - [x] Pydantic 스키마 정의 (`MemoryExtraction`) — `chat_new.py` 1차 적용 완료
+  - [x] `with_structured_output`으로 JSON 강제 파싱 — `chat_new.py` 1차 적용 완료
+  - [x] `user_memories` 테이블 UPSERT + 충돌 해소 로직 — `chat_new.py` 1차 적용 완료
+  - [x] 프롬프트에 `[사용자 장기 기억]` 섹션 추가 — `chat_new.py` 1차 적용 완료
+  - [x] 장기 기억 추출 백그라운드 큐 연동
+  - [x] 5턴 배치 트리거 + 블록 게이팅(잡담/질문 블록 스킵) 적용
+  - [x] 백그라운드 캐치업 while + 1회 최대 3블록 제한 적용
 - [ ] 시맨틱 라우팅 모듈 분리 (`routing.py`)
   - [x] `router_samples.json` 작성 (카테고리별 샘플 운영 중)
   - [x] CHITCHAT 경로: RAG 스킵, 최근 이력 포함하여 LLM 직발 (`chat_new.py` 구현 완료)
   - [x] KNOWLEDGE 경로: 전체 RAG 파이프라인 가동 (`chat_new.py` 구현 완료)
+  - [x] 라우팅 근접 점수 오분류 완화: `ROUTER_MARGIN=0.02` 적용
+  - [x] 샘플 보강: 자기정보/계획형 문장(`주말 프로젝트`, `깃허브`) 추가
         ~~ - [ ] DANGER 경로: 임계값 0.65, 안전 응답 리턴 ~~
 - [x] 시맨틱 라우팅 1차 적용 (`chat_new.py` 기준)
   - [x] CHITCHAT: RAG 스킵
@@ -565,9 +573,10 @@ async def chat_endpoint(request: ChatRequest):
   - [x] DANGER 입력 문서 저장/요약 트리거 제외
   - [x] DANGER 라우팅 플래그 기본 OFF(`ENABLE_DANGER_ROUTING = False`), 필요 시 즉시 재활성화 가능
   - [ ] 샘플별 센트로이드 프로토타입(정확도 개선) — 시작 지연/호출량 증가로 보류
-- [ ] 저장 가치 판단(Document Gating) 추가
+- [x] 저장 가치 판단(Document Gating) 추가
   - [x] 룰 베이스 필터 (`is_worth_storing`) 기본 적용 (2026-03-25 완료)
   - [x] CHITCHAT 라우팅 결과 연계
+  - [x] CHITCHAT 저장 완화: 길이 + 사실 신호(`MIN_STORE_LENGTH_FOR_CHITCHAT`, `STORE_FACT_HINTS`) 예외 허용
 - [x] 하이브리드 검색/재랭크 적용 (`chat_new.py` 기준)
   - [x] 벡터 후보 + 키워드 후보 결합 재랭크
   - [x] 12 -> 8 -> 4 검색 파이프라인 적용
@@ -582,6 +591,25 @@ async def chat_endpoint(request: ChatRequest):
   - [x] 조사 제거 토큰 정규화 (`normalize_keyword_token`)
   - [x] 1글자 핵심어 예외(`책`) 반영
   - [x] 동의어 사전 기반 확장 (`KEYWORD_SYNONYMS`)
+  - [x] 장기기억 게이팅 패턴 확장(`MEMORY_SIGNAL_PATTERNS`) 및 통과 완화
+
+- [x] OOC/IC 입력 파서 1차 적용 (`chat_new.py` 기준)
+  - [x] `(OOC: ...)`, `(IC: ...)` 태그 파싱 및 저장용 세그먼트 분리
+  - [x] 시스템 프롬프트에 `mode_instruction` 주입
+  - [x] OOC/IC 원문도 `chat_messages` 저장 + `metadata.input_mode` 기록
+  - [x] 혼합 입력 분해 저장(세그먼트): `is_segment`, `origin_message_id`, `origin_group_id`, `segment_index`
+  - [x] 동일 태그(OOC/IC) 중복 출현 시 특수 파싱 무시(NORMAL 저장)
+  - [x] 컨텍스트 조회 필터 적용: OOC 원문/세그먼트는 제외, 혼합 입력의 NORMAL/IC 세그먼트는 프롬프트/요약/메모리에 포함
+  - [x] LLM 호출은 항상 원문 입력 유지(저장 경로만 분해)
+
+- [x] 기술 질의 RAG 노이즈 완화 (`chat_new.py` 기준)
+  - [x] 동적 이름/호칭 stopword 처리(`user_name`, `char_name` 기반)
+  - [x] 기술 키워드 보너스(`TECH_KEYWORDS`, `TECH_KEYWORD_BONUS`) 적용
+  - [x] 디버그 로그에 `tech_bonus` 노출
+
+- [x] 메모리 진행 상태 로깅 추가 (`chat_new.py` 기준)
+  - [x] `get_memory_progress`로 마지막 처리 user_id / 미처리 사용자발화 수 출력
+  - [x] 장기기억 프롬프트 주입 텍스트에 `owner -> target` 명시
 
 ### Phase 3: 구조 개선 (2순위)
 
@@ -666,3 +694,18 @@ async def chat_endpoint(request: ChatRequest):
 - **잔여 과제:** `insert_message`/`insert_document` 등 저장 경로는 아직 동기 호출이므로, 서버화 단계에서 `BackgroundTasks` + async DB로 전환 필요.
 - **추가 과제:** 컨텍스트 캐시(L1/L2) 도입으로 프롬프트 조립 및 DB 재조회 비용을 줄여 P95 지연을 추가로 낮출 것.
 - **향후 계획:** FastAPI 전환 시 `StreamingResponse(chain.astream(...))` + 후처리 태스크 분리를 표준 경로로 고정.
+
+---
+
+## 2026-03-26 �߰� �ݿ� (���ռ� ����)
+
+- `fetch_recent_messages` ��ȸ ���� ��� ǥ�� ����: `max(limit*3, limit)` -> `limit * FETCH_HISTORY_MULTIPLIER`
+- ����� punctuation ���� ����ȭ:
+  - `?`/`!` ���ʽ��� `knowledge_hit_count > 0`�� ���� ����
+  - chitchat ��Ʈ�� ���ٴ� ���������� knowledge �������� ����
+- `origin_group_id` ���� ��� ����:
+  - Ÿ�ӽ����� �и��� ��� -> `uuid4` ������� �浹 ���ɼ� ���
+- ����� ������Ʈ ���� ���� �ܼ�ȭ:
+  - `owner/target/confidence` ���� ���� ��Ÿ�� ����� �ǹ� ����(`type/key/value`)�� ����
+- `router_samples.json` ����:
+  - knowledge ���ÿ��� `"���� ��¥ �˷���"`, `"���� ��þ�"` ����
