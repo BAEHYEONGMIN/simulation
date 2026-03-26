@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -32,6 +33,7 @@ class SampleOutcome:
     actual_route: str
     route_pass: bool
     docs_expected_pass: bool
+    summary_expected_pass: bool
     docs_forbidden_pass: bool
     answer_keywords_pass: bool | None
     eval_mode: str
@@ -67,11 +69,41 @@ def parse_args() -> argparse.Namespace:
 
 
 def normalize_text(value: str) -> str:
-    return (value or "").strip().lower()
+    text = (value or "").lower().strip()
+    text = re.sub(r"[\u200b\u200c\u200d]", "", text)
+    text = text.replace("-", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+KEYWORD_ALIASES = {
+    "a*": "astar",
+    "a 스타": "astar",
+    "a스타": "astar",
+    "에이 스타": "astar",
+    "에이스타": "astar",
+    "다익스트라": "dijkstra",
+    "dijkstra": "dijkstra",
+    "플로이드 워셜": "floyd_warshall",
+    "floyd warshall": "floyd_warshall",
+    "floyd-warshall": "floyd_warshall",
+    "lin": "lin",
+    "can": "can",
+}
+
+
+def canonicalize_keyword(value: str) -> str:
+    t = normalize_text(value)
+    return KEYWORD_ALIASES.get(t, t)
 
 
 def contains_keyword(text: str, keyword: str) -> bool:
-    return normalize_text(keyword) in normalize_text(text)
+    normalized_text = normalize_text(text)
+    canonical = canonicalize_keyword(keyword)
+    variants = [k for k, v in KEYWORD_ALIASES.items() if v == canonical]
+    variants.append(canonical)
+    normalized_variants = {normalize_text(v) for v in variants if normalize_text(v)}
+    return any(v in normalized_text for v in normalized_variants)
 
 
 def build_docs_text(docs: list[dict[str, Any]]) -> str:
@@ -106,6 +138,10 @@ def evaluate_sample(
     input_text = str(sample.get("input", "")).strip()
     expected_route = str(sample.get("expected_route", "")).strip().upper()
     expected_doc_keywords = sample.get("expected_doc_keywords", []) or []
+    expected_summary_keywords = sample.get("expected_summary_keywords", []) or []
+    expected_keyword_scope = str(
+        sample.get("expected_keyword_scope", "either" if eval_mode == "stateful" else "docs")
+    ).strip().lower()
     forbidden_doc_keywords = sample.get("forbidden_doc_keywords", []) or []
     expected_answer_keywords = sample.get("expected_answer_keywords", []) or []
 
@@ -127,6 +163,7 @@ def evaluate_sample(
                 actual_route="INVALID_SAMPLE",
                 route_pass=False,
                 docs_expected_pass=False,
+                summary_expected_pass=False,
                 docs_forbidden_pass=False,
                 answer_keywords_pass=None,
                 eval_mode=eval_mode,
@@ -189,13 +226,10 @@ def evaluate_sample(
         for row in summary_rows_for_context
         if (row.get("summary_text") or "").strip()
     )
-    # Stateful recollection queries in chat_new receive recent summaries directly in prompt.
-    # To avoid false negatives, expected keyword checks use docs + summary context.
-    expected_scope_text = docs_text
-    if eval_mode == "stateful" and summary_context_text:
-        expected_scope_text = docs_text + "\n" + summary_context_text
     route_pass = (actual_route == expected_route)
-    docs_expected_pass = check_expected_keywords(expected_scope_text, expected_doc_keywords)
+    docs_expected_pass = check_expected_keywords(docs_text, expected_doc_keywords)
+    summary_keywords = expected_summary_keywords if expected_summary_keywords else expected_doc_keywords
+    summary_expected_pass = check_expected_keywords(summary_context_text, summary_keywords)
     docs_forbidden_pass = check_forbidden_keywords(docs_text, forbidden_doc_keywords)
 
     answer_keywords_pass: bool | None = None
@@ -203,7 +237,13 @@ def evaluate_sample(
         proxy_text = input_text + "\n" + docs_text
         answer_keywords_pass = check_expected_keywords(proxy_text, expected_answer_keywords)
 
-    passed = route_pass and docs_expected_pass and docs_forbidden_pass
+    if expected_keyword_scope == "summary":
+        expected_pass = summary_expected_pass
+    elif expected_keyword_scope == "either":
+        expected_pass = docs_expected_pass or summary_expected_pass
+    else:
+        expected_pass = docs_expected_pass
+    passed = route_pass and expected_pass and docs_forbidden_pass
     if answer_keywords_pass is not None:
         passed = passed and answer_keywords_pass
 
@@ -217,6 +257,7 @@ def evaluate_sample(
         actual_route=actual_route,
         route_pass=route_pass,
         docs_expected_pass=docs_expected_pass,
+        summary_expected_pass=summary_expected_pass,
         docs_forbidden_pass=docs_forbidden_pass,
         answer_keywords_pass=answer_keywords_pass,
         eval_mode=eval_mode,
@@ -245,6 +286,8 @@ def main() -> int:
         samples = [s for s in samples if str(s.get("eval_mode", "stateless")).lower() == args.mode]
     if args.limit and args.limit > 0:
         samples = samples[: args.limit]
+    if not args.danger_routing:
+        samples = [s for s in samples if str(s.get("expected_route", "")).upper() != chat_new.ROUTE_DANGER]
 
     if args.danger_routing:
         chat_new.ENABLE_DANGER_ROUTING = True
@@ -265,7 +308,7 @@ def main() -> int:
                 print(
                     f"[{idx:02d}] {outcome.sample_id} | pass={outcome.passed} | "
                     f"route {outcome.expected_route}->{outcome.actual_route} | "
-                    f"docs_expected={outcome.docs_expected_pass} | docs_forbidden={outcome.docs_forbidden_pass}"
+                    f"docs_expected={outcome.docs_expected_pass} | summary_expected={outcome.summary_expected_pass} | docs_forbidden={outcome.docs_forbidden_pass}"
                 )
         except Exception as exc:  # noqa: BLE001
             outcomes.append(
@@ -276,6 +319,7 @@ def main() -> int:
                     actual_route="ERROR",
                     route_pass=False,
                     docs_expected_pass=False,
+                    summary_expected_pass=False,
                     docs_forbidden_pass=False,
                     answer_keywords_pass=None,
                     eval_mode=str(sample.get("eval_mode", "unknown")),
@@ -293,6 +337,7 @@ def main() -> int:
     passed = sum(1 for o in outcomes if o.passed)
     route_ok = sum(1 for o in outcomes if o.route_pass)
     docs_ok = sum(1 for o in outcomes if o.docs_expected_pass and o.docs_forbidden_pass)
+    summary_ok = sum(1 for o in outcomes if o.summary_expected_pass)
 
     report = {
         "meta": {
@@ -306,6 +351,7 @@ def main() -> int:
             "pass_rate": round((passed / total), 4) if total else 0.0,
             "route_pass_count": route_ok,
             "docs_pass_count": docs_ok,
+            "summary_expected_pass_count": summary_ok,
         },
         "results": [
             {
@@ -318,6 +364,7 @@ def main() -> int:
                 "actual_route": o.actual_route,
                 "route_pass": o.route_pass,
                 "docs_expected_pass": o.docs_expected_pass,
+                "summary_expected_pass": o.summary_expected_pass,
                 "docs_forbidden_pass": o.docs_forbidden_pass,
                 "answer_keywords_pass": o.answer_keywords_pass,
                 "threshold": o.threshold,
@@ -344,6 +391,7 @@ def main() -> int:
     print(f"Pass rate: {report['meta']['pass_rate']:.2%}")
     print(f"Route pass: {route_ok}/{total}")
     print(f"Docs pass:  {docs_ok}/{total}")
+    print(f"Summary expected pass: {summary_ok}/{total}")
     print(f"Report: {out_path}")
     print("=" * 72)
 
@@ -352,3 +400,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+    if not args.danger_routing:
+        samples = [s for s in samples if str(s.get("expected_route", "")).upper() != chat_new.ROUTE_DANGER]

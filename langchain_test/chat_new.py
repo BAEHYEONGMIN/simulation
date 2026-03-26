@@ -664,6 +664,35 @@ async def stream_answer(chain_inputs: dict, char_name: str) -> str:
     return "".join(chunks).strip()
 
 
+async def insert_message_in_thread(**kwargs) -> dict:
+    """DB message INSERT를 스레드로 오프로딩."""
+    return await asyncio.to_thread(insert_message, **kwargs)
+
+
+async def insert_document_in_thread(**kwargs) -> dict:
+    """DB document INSERT를 스레드로 오프로딩."""
+    return await asyncio.to_thread(insert_document, **kwargs)
+
+
+def schedule_background_db_task(
+    pending_tasks: set[asyncio.Task],
+    coro,
+    label: str,
+) -> None:
+    """백그라운드 DB 작업 등록 + 예외 로깅 + 참조 정리."""
+    task = asyncio.create_task(coro)
+    pending_tasks.add(task)
+
+    def _on_done(done_task: asyncio.Task) -> None:
+        pending_tasks.discard(done_task)
+        try:
+            done_task.result()
+        except Exception as e:
+            print(f"[DB-BG-ERROR] {label}: {e}")
+
+    task.add_done_callback(_on_done)
+
+
 async def run_chat_loop() -> None:
     conf_uid    = "sua_test_003" # 대화 요약 테스트용
     history_uid = "session_001"
@@ -684,6 +713,7 @@ async def run_chat_loop() -> None:
     print("대화를 시작합니다. 종료: exit / quit / q")
     print("=" * 80)
     initialize_router_if_needed()
+    pending_bg_tasks: set[asyncio.Task] = set()
 
     try:
         while True:
@@ -836,7 +866,7 @@ async def run_chat_loop() -> None:
 
                 # 5) 사용자 원문 저장 + 세그먼트 저장 (추적용)
                 origin_group_id = f"{history_uid}:{uuid4().hex}"
-                saved_user_msg = insert_message(
+                saved_user_msg = await insert_message_in_thread(
                     conf_uid=conf_uid,
                     history_uid=history_uid,
                     content=user_input,
@@ -863,24 +893,28 @@ async def run_chat_loop() -> None:
                         seg_text = (seg.get("text") or "").strip()
                         if not seg_text:
                             continue
-                        insert_message(
-                            conf_uid=conf_uid,
-                            history_uid=history_uid,
-                            content=seg_text,
-                            role="human",
-                            speaker_type="user",
-                            speaker_id=user_id,
-                            display_name=user_name,
-                            reply_to_message_id=saved_user_msg["id"],
-                            metadata={
-                                "input_mode": str(seg.get("mode") or INPUT_MODE_NORMAL).upper(),
-                                "is_segment": True,
-                                "segment_index": idx,
-                                "segment_mode": str(seg.get("mode") or INPUT_MODE_NORMAL).upper(),
-                                "origin_message_id": saved_user_msg["id"],
-                                "origin_group_id": origin_group_id,
-                                "duplicate_tag_ignored": duplicate_tag_ignored,
-                            },
+                        schedule_background_db_task(
+                            pending_bg_tasks,
+                            insert_message_in_thread(
+                                conf_uid=conf_uid,
+                                history_uid=history_uid,
+                                content=seg_text,
+                                role="human",
+                                speaker_type="user",
+                                speaker_id=user_id,
+                                display_name=user_name,
+                                reply_to_message_id=saved_user_msg["id"],
+                                metadata={
+                                    "input_mode": str(seg.get("mode") or INPUT_MODE_NORMAL).upper(),
+                                    "is_segment": True,
+                                    "segment_index": idx,
+                                    "segment_mode": str(seg.get("mode") or INPUT_MODE_NORMAL).upper(),
+                                    "origin_message_id": saved_user_msg["id"],
+                                    "origin_group_id": origin_group_id,
+                                    "duplicate_tag_ignored": duplicate_tag_ignored,
+                                },
+                            ),
+                            label="insert_user_segment",
                         )
 
                 non_ooc_segment_texts = [
@@ -894,19 +928,44 @@ async def run_chat_loop() -> None:
 
                 # 6) 사용자 메시지 임베딩 → documents 저장
                 if (not has_ooc_only) and is_worth_storing(store_candidate_text, route_label=route_label):
-                    store_embedding = query_embedding if store_candidate_text == user_input else generate_embedding(store_candidate_text)
-                    insert_document(
-                        conf_uid=conf_uid,
-                        history_uid=history_uid,
-                        speaker_id=user_id,
-                        content=store_candidate_text,
-                        embedding=store_embedding,
-                        related_message_id=saved_user_msg["id"],
-                        extra_metadata={
-                            "input_mode": input_mode,
-                            "origin_group_id": origin_group_id,
-                        },
-                    )
+                    if store_candidate_text == user_input:
+                        schedule_background_db_task(
+                            pending_bg_tasks,
+                            insert_document_in_thread(
+                                conf_uid=conf_uid,
+                                history_uid=history_uid,
+                                speaker_id=user_id,
+                                content=store_candidate_text,
+                                embedding=query_embedding,
+                                related_message_id=saved_user_msg["id"],
+                                extra_metadata={
+                                    "input_mode": input_mode,
+                                    "origin_group_id": origin_group_id,
+                                },
+                            ),
+                            label="insert_user_document",
+                        )
+                    else:
+                        async def _insert_user_document_with_new_embedding() -> None:
+                            store_embedding = await asyncio.to_thread(generate_embedding, store_candidate_text)
+                            await insert_document_in_thread(
+                                conf_uid=conf_uid,
+                                history_uid=history_uid,
+                                speaker_id=user_id,
+                                content=store_candidate_text,
+                                embedding=store_embedding,
+                                related_message_id=saved_user_msg["id"],
+                                extra_metadata={
+                                    "input_mode": input_mode,
+                                    "origin_group_id": origin_group_id,
+                                },
+                            )
+
+                        schedule_background_db_task(
+                            pending_bg_tasks,
+                            _insert_user_document_with_new_embedding(),
+                            label="insert_user_document_with_embedding",
+                        )
                 elif DEBUG:
                     print("[GATING] documents 저장 스킵: 저가치 입력 또는 OOC-only 입력")
 
@@ -918,7 +977,7 @@ async def run_chat_loop() -> None:
                 ai_meta = {"retrieved_docs": retrieved_info} if retrieved_info else {}
                 ai_meta["input_mode"] = input_mode
                 ai_meta["origin_group_id"] = origin_group_id
-                insert_message(
+                await insert_message_in_thread(
                     conf_uid=conf_uid,
                     history_uid=history_uid,
                     role="ai",
@@ -957,6 +1016,8 @@ async def run_chat_loop() -> None:
             except Exception as e:
                 print(f"\n[오류] {e}\n")
     finally:
+        if pending_bg_tasks:
+            await asyncio.gather(*pending_bg_tasks, return_exceptions=True)
         print(f"[종료 시각] {datetime.now(timezone.utc).astimezone().isoformat()}")
         sys.stdout = original_stdout
         sys.stderr = original_stderr

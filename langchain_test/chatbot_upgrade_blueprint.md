@@ -630,7 +630,7 @@ async def chat_endpoint(request: ChatRequest):
   - [x] 이벤트 루프 단일화 (`asyncio.run` 1회, 턴 내부 재호출 제거) (2026-03-25 완료)
   - [x] 요약 트리거 백그라운드 스레드 분리 (유저 입력 블로킹 제거) (2026-03-25 완료)
   - [x] 요약 진행 로그를 메인 루프에서 출력하도록 조정 (입력창 간섭 완화) (2026-03-25 완료)
-  - [ ] 메시지 INSERT/문서 INSERT 전체를 백그라운드 태스크로 분리
+  - [x] 메시지 INSERT/문서 INSERT 전체를 백그라운드 태스크로 분리 (2026-03-26 완료)
   - [ ] FastAPI 환경 기준 `async` DB I/O 경로로 통일
   - [ ] `RunnableParallel`로 조회 체인 마이그레이션 (현재 ThreadPoolExecutor)
 
