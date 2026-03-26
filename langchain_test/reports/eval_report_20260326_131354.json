@@ -1,0 +1,38 @@
+{
+  "meta": {
+    "generated_at": "2026-03-26T13:13:54.164307+09:00",
+    "samples_file": "C:\\Users\\user\\Desktop\\project\\baemin\\baemin_project\\langchain_test\\eval_samples.json",
+    "mode_filter": "all",
+    "danger_routing_enabled": false,
+    "evaluate_answer_keywords": false,
+    "total_samples": 1,
+    "passed_samples": 1,
+    "pass_rate": 1.0,
+    "route_pass_count": 1,
+    "docs_pass_count": 1
+  },
+  "results": [
+    {
+      "sample_id": "stateless_chat_001",
+      "passed": true,
+      "eval_mode": "stateless",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": null,
+      "expected_route": "CHITCHAT",
+      "actual_route": "CHITCHAT",
+      "route_pass": true,
+      "docs_expected_pass": true,
+      "docs_forbidden_pass": true,
+      "answer_keywords_pass": null,
+      "threshold": 0.0,
+      "route_scores": {
+        "CHITCHAT": 0.8890794901134578,
+        "KNOWLEDGE": 0.48902599987893464,
+        "DANGER": 0.0
+      },
+      "selected_doc_ids": [],
+      "selected_doc_preview": [],
+      "notes": []
+    }
+  ]
+}

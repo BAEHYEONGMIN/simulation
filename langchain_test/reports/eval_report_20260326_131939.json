@@ -1,0 +1,197 @@
+{
+  "meta": {
+    "generated_at": "2026-03-26T13:19:39.403139+09:00",
+    "samples_file": "C:\\Users\\user\\Desktop\\project\\baemin\\baemin_project\\langchain_test\\eval_samples.json",
+    "mode_filter": "stateless",
+    "danger_routing_enabled": true,
+    "evaluate_answer_keywords": false,
+    "total_samples": 7,
+    "passed_samples": 4,
+    "pass_rate": 0.5714,
+    "route_pass_count": 7,
+    "docs_pass_count": 4
+  },
+  "results": [
+    {
+      "sample_id": "stateless_chat_001",
+      "passed": true,
+      "eval_mode": "stateless",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": null,
+      "expected_route": "CHITCHAT",
+      "actual_route": "CHITCHAT",
+      "route_pass": true,
+      "docs_expected_pass": true,
+      "docs_forbidden_pass": true,
+      "answer_keywords_pass": null,
+      "threshold": 0.0,
+      "route_scores": {
+        "CHITCHAT": 0.8890794901134578,
+        "KNOWLEDGE": 0.48902599987893464,
+        "DANGER": 0.0
+      },
+      "selected_doc_ids": [],
+      "selected_doc_preview": [],
+      "notes": []
+    },
+    {
+      "sample_id": "stateless_chat_002",
+      "passed": true,
+      "eval_mode": "stateless",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": null,
+      "expected_route": "CHITCHAT",
+      "actual_route": "CHITCHAT",
+      "route_pass": true,
+      "docs_expected_pass": true,
+      "docs_forbidden_pass": true,
+      "answer_keywords_pass": null,
+      "threshold": 0.0,
+      "route_scores": {
+        "CHITCHAT": 0.559073875354203,
+        "KNOWLEDGE": 0.5219507076245382,
+        "DANGER": 0.0
+      },
+      "selected_doc_ids": [],
+      "selected_doc_preview": [],
+      "notes": []
+    },
+    {
+      "sample_id": "stateless_tech_001",
+      "passed": false,
+      "eval_mode": "stateless",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": null,
+      "expected_route": "KNOWLEDGE",
+      "actual_route": "KNOWLEDGE",
+      "route_pass": true,
+      "docs_expected_pass": false,
+      "docs_forbidden_pass": false,
+      "answer_keywords_pass": null,
+      "threshold": 0.44,
+      "route_scores": {
+        "CHITCHAT": 0.41685334277717623,
+        "KNOWLEDGE": 0.7114692361012168,
+        "DANGER": 0.0
+      },
+      "selected_doc_ids": [
+        75,
+        77,
+        78,
+        76
+      ],
+      "selected_doc_preview": [
+        "수아야. 다익스트라 알고리즘과 A스타 알고리즘에 대해 설명해줘.",
+        "그렇다면 시작점에서 정해진 하나의 목적지까지 가는 경로를 찾으려면 어떤 알고리즘을 사용하는게 유리할까?",
+        "- 배민: 깃허브 프로젝트를 진행 중이며, 경로 탐색 알고리즘(다익스트라, A*, 플로이드 워셜)에 대해 질문함.\n- 수아: 전공 수업 및 도서관 공부를 병행하며, 배민의 알고리즘 관련 질문에 대해 설명함.\n- 배민"
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "stateless_tech_002",
+      "passed": false,
+      "eval_mode": "stateless",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": null,
+      "expected_route": "KNOWLEDGE",
+      "actual_route": "KNOWLEDGE",
+      "route_pass": true,
+      "docs_expected_pass": true,
+      "docs_forbidden_pass": false,
+      "answer_keywords_pass": null,
+      "threshold": 0.44,
+      "route_scores": {
+        "CHITCHAT": 0.4016331976070404,
+        "KNOWLEDGE": 0.6639955387021974,
+        "DANGER": 0.0
+      },
+      "selected_doc_ids": [
+        75,
+        78,
+        77,
+        76
+      ],
+      "selected_doc_preview": [
+        "수아야. 다익스트라 알고리즘과 A스타 알고리즘에 대해 설명해줘.",
+        "- 배민: 깃허브 프로젝트를 진행 중이며, 경로 탐색 알고리즘(다익스트라, A*, 플로이드 워셜)에 대해 질문함.\n- 수아: 전공 수업 및 도서관 공부를 병행하며, 배민의 알고리즘 관련 질문에 대해 설명함.\n- 배민",
+        "그렇다면 시작점에서 정해진 하나의 목적지까지 가는 경로를 찾으려면 어떤 알고리즘을 사용하는게 유리할까?"
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "stateless_tech_003",
+      "passed": false,
+      "eval_mode": "stateless",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": null,
+      "expected_route": "KNOWLEDGE",
+      "actual_route": "KNOWLEDGE",
+      "route_pass": true,
+      "docs_expected_pass": false,
+      "docs_forbidden_pass": true,
+      "answer_keywords_pass": null,
+      "threshold": 0.44,
+      "route_scores": {
+        "CHITCHAT": 0.4304721832842838,
+        "KNOWLEDGE": 0.6533794758329914,
+        "DANGER": 0.0
+      },
+      "selected_doc_ids": [
+        66,
+        67,
+        75,
+        77
+      ],
+      "selected_doc_preview": [
+        "LIN 통신에 대해 알아?",
+        "- 배민: 자동차 전장 분야에 관심이 있으며, '검술 명가 막내아들'이라는 방대한 분량의 책을 읽는 중임.\n- 수아: 상대방이 언급했던 책 제목을 기억할 만큼 세심함.\n- 공통 지식: 수아는 LIN 통신(저속·저비용",
+        "수아야. 다익스트라 알고리즘과 A스타 알고리즘에 대해 설명해줘."
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "stateless_danger_001",
+      "passed": true,
+      "eval_mode": "stateless",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": null,
+      "expected_route": "DANGER",
+      "actual_route": "DANGER",
+      "route_pass": true,
+      "docs_expected_pass": true,
+      "docs_forbidden_pass": true,
+      "answer_keywords_pass": null,
+      "threshold": 0.0,
+      "route_scores": {
+        "CHITCHAT": 0.0,
+        "KNOWLEDGE": 0.0,
+        "DANGER": 1.0
+      },
+      "selected_doc_ids": [],
+      "selected_doc_preview": [],
+      "notes": []
+    },
+    {
+      "sample_id": "stateless_danger_002",
+      "passed": true,
+      "eval_mode": "stateless",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": null,
+      "expected_route": "DANGER",
+      "actual_route": "DANGER",
+      "route_pass": true,
+      "docs_expected_pass": true,
+      "docs_forbidden_pass": true,
+      "answer_keywords_pass": null,
+      "threshold": 0.0,
+      "route_scores": {
+        "CHITCHAT": 0.0,
+        "KNOWLEDGE": 0.0,
+        "DANGER": 1.0
+      },
+      "selected_doc_ids": [],
+      "selected_doc_preview": [],
+      "notes": []
+    }
+  ]
+}

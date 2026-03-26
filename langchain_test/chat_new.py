@@ -803,6 +803,10 @@ TECH_KEYWORDS = {
     "코드", "파이썬", "자바", "c", "c++", "sql", "디버그", "에러",
 }
 TECH_KEYWORD_BONUS = 0.12
+TECH_QUERY_NOISE_PENALTY = 0.18
+LIFESTYLE_KEYWORDS = {
+    "마라탕", "꿔바로우", "주말", "점심", "저녁", "산책", "카페", "소설", "추리", "스릴러",
+}
 
 ONE_CHAR_KEYWORDS = {"책"}
 JOSA_SUFFIXES = [
@@ -1011,6 +1015,9 @@ def rerank_documents(
     vector_w = 0.45 if recall_mode else 0.72
     keyword_w = 0.55 if recall_mode else 0.28
 
+    query_lower = (user_input or "").lower()
+    query_has_tech = any(k in query_lower for k in TECH_KEYWORDS)
+
     scored = []
     for doc_id, d in by_id.items():
         if doc_id not in vector_score_by_id and doc_id not in keyword_top_ids:
@@ -1037,19 +1044,24 @@ def rerank_documents(
         content_lower = (d.get("content") or "").lower()
         tech_hit = any(k in content_lower for k in TECH_KEYWORDS) and any(k in terms for k in TECH_KEYWORDS)
         tech_bonus = TECH_KEYWORD_BONUS if tech_hit else 0.0
+        lifestyle_hit = any(k in content_lower for k in LIFESTYLE_KEYWORDS)
+        noise_penalty = 0.0
+        if query_has_tech and (not tech_hit) and lifestyle_hit:
+            noise_penalty = TECH_QUERY_NOISE_PENALTY
 
         source_boost = 0.0
         if source_type == "chat_message":
             source_boost = 0.14 if recall_mode else 0.04
         elif source_type == "summary":
-            source_boost = -0.06 if recall_mode else 0.01
+            source_boost = 0.03 if recall_mode else -0.02
 
-        rank_score = (vector_w * vscore) + (keyword_w * float(kscore)) + source_boost + tech_bonus
+        rank_score = (vector_w * vscore) + (keyword_w * float(kscore)) + source_boost + tech_bonus - noise_penalty
         d["rank_score"] = round(rank_score, 4)
         d["keyword_score"] = round(float(kscore), 4)
         d["similarity"] = round(float(vscore), 4)
         d["source_type"] = source_type or "unknown"
         d["tech_bonus"] = round(tech_bonus, 4)
+        d["noise_penalty"] = round(noise_penalty, 4)
         scored.append(d)
 
     scored.sort(key=lambda x: x.get("rank_score", 0.0), reverse=True)

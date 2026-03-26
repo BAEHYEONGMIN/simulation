@@ -611,6 +611,13 @@ async def chat_endpoint(request: ChatRequest):
   - [x] `get_memory_progress`로 마지막 처리 user_id / 미처리 사용자발화 수 출력
   - [x] 장기기억 프롬프트 주입 텍스트에 `owner -> target` 명시
 
+- [x] 정합성 보정 2차 반영 (`chat_new.py`, `router_samples.json`)
+  - [x] `fetch_recent_messages` 조회 여유 배수 표현 정리 (`limit * FETCH_HISTORY_MULTIPLIER`)
+  - [x] 라우팅 punctuation 보정 보수화 (`knowledge_hit_count > 0`일 때만 보너스)
+  - [x] `origin_group_id`를 `uuid4` 기반으로 변경 (타임스탬프 충돌 리스크 완화)
+  - [x] 장기기억 프롬프트 주입 포맷 단순화 (`owner/target/confidence` 비노출)
+  - [x] `router_samples.json` knowledge 샘플에서 시간/날짜 질문 제거
+
 ### Phase 3: 구조 개선 (2순위)
 
 - [ ] DB 코드 관심사 분리 (`db/` 디렉토리) — 순수 Python 모듈 분리
@@ -650,9 +657,13 @@ async def chat_endpoint(request: ChatRequest):
 
 - [ ] 동의어 사전(`KEYWORD_SYNONYMS`) 운영 프로세스 정착
 - [ ] 회상 패턴/노이즈 패턴 사전 운영 프로세스 정착
-- [ ] 회상형 질문 자동 평가셋 구축(제목/이름/숫자)
-- [ ] 하이브리드 랭킹 가중치 A/B 테스트 및 고정
-- [ ] 임계값(`0.34/0.44`) 상수화 및 실험 기반 재설정
+- [ ] 회상형 질문 자동 평가셋 구축(제목/이름/숫자) — **보류(대화 데이터 충분 축적 후 진행)**
+- [ ] 하이브리드 랭킹 가중치 A/B 테스트 및 고정 — **보류(평가셋 안정화 이후)**
+- [x] Evals 러너 구축 (`eval_runner.py`) (done 2026-03-26)
+  - [x] `eval_samples.json` schema finalized (`eval_mode`, `seed_conf_uid`, `seed_history_uid`, `expected_route`, `expected_doc_keywords`, `forbidden_doc_keywords`, `expected_answer_keywords`) (done 2026-03-26)
+  - [ ] 라우팅 정확도/검색 노이즈율/답변 키워드 커버리지 리포트 출력 — **보류(데이터 축적 후)**
+  - [ ] 튜닝 반려 기준 명시 (라우팅 정확도 하락, 노이즈율 상승 시 반려) — **보류(데이터 축적 후)**
+- [ ] 임계값(`0.34/0.44`) 상수화 및 실험 기반 재설정 — **보류(평가셋 충분 확보 후)**
 
 ### 프롬프트 구조 (정합성 보강)
 
@@ -697,15 +708,76 @@ async def chat_endpoint(request: ChatRequest):
 
 ---
 
-## 2026-03-26 �߰� �ݿ� (���ռ� ����)
+## 2026-03-26 추가 반영 (정합성 보정)
 
-- `fetch_recent_messages` ��ȸ ���� ��� ǥ�� ����: `max(limit*3, limit)` -> `limit * FETCH_HISTORY_MULTIPLIER`
-- ����� punctuation ���� ����ȭ:
-  - `?`/`!` ���ʽ��� `knowledge_hit_count > 0`�� ���� ����
-  - chitchat ��Ʈ�� ���ٴ� ���������� knowledge �������� ����
-- `origin_group_id` ���� ��� ����:
-  - Ÿ�ӽ����� �и��� ��� -> `uuid4` ������� �浹 ���ɼ� ���
-- ����� ������Ʈ ���� ���� �ܼ�ȭ:
-  - `owner/target/confidence` ���� ���� ��Ÿ�� ����� �ǹ� ����(`type/key/value`)�� ����
-- `router_samples.json` ����:
-  - knowledge ���ÿ��� `"���� ��¥ �˷���"`, `"���� ��þ�"` ����
+- `fetch_recent_messages` 조회 여유 배수 표현 정리: `max(limit*3, limit)` -> `limit * FETCH_HISTORY_MULTIPLIER`
+- 라우팅 punctuation 보정 보수화:
+  - `?`/`!` 보너스는 `knowledge_hit_count > 0`일 때만 적용
+  - chitchat 힌트가 없다는 이유만으로 knowledge 가산하지 않음
+- `origin_group_id` 생성 방식 개선:
+  - 타임스탬프 밀리초 기반 -> `uuid4` 기반으로 충돌 가능성 축소
+- 장기기억 프롬프트 주입 포맷 단순화:
+  - `owner/target/confidence` 같은 내부 메타는 숨기고 의미 정보(`type/key/value`)만 주입
+- `router_samples.json` 정제:
+  - knowledge 샘플에서 `"오늘 날짜 알려줘"`, `"지금 몇시야"` 제거
+
+---
+
+## 2026-03-26 리뷰 반영 (신규 항목만)
+
+아래는 기존 TODO(비동기 저장 경로 분리, 컨텍스트 캐시 구현, db/services/prompts 모듈 분리, 프롬프트 파일 분리)에 이미 포함된 내용은 제외하고, 이번 리뷰에서 새롭게 보강한 항목만 기록한다.
+
+### 1) Evals 운영 설계 구체화 (신규)
+
+- `eval_samples.json` 스키마 정의
+  - `id`, `input`, `expected_route`, `expected_doc_keywords`, `forbidden_doc_keywords`, `expected_answer_keywords`
+- `eval_runner.py` 추가
+  - 라우팅 정확도(Route Acc)
+  - 검색 품질(Top-k 관련성, 노이즈율)
+  - 답변 키워드 커버리지
+- 릴리즈/튜닝 기준선 정의
+  - 라우팅 정확도 하락, 노이즈율 상승 시 변경 반려
+  - 재랭크/가중치/threshold 수정 시 eval 필수 재실행
+
+### 2) 라우터 샘플 밸런스 정책 (신규)
+
+- `router_samples.json`의 knowledge 샘플은 회상형 + 일반지식형을 균형 있게 유지
+- 회상형 편향 시, 일반 설명 질문이 CHITCHAT으로 오분류되는지 정기 점검
+- 샘플 유지 규칙
+  - 카테고리별 최소 샘플 수
+  - 분기별(회상/설명/비교/정의) 최소 샘플 수
+
+### 3) ROUTER_MARGIN 비대칭 정책 문서화 (신규)
+
+- 현재 분기 규칙은 애매한 점수에서 KNOWLEDGE 쪽으로 기울 수 있음
+- 이것을 의도된 정책으로 둘지, 대칭 임계값으로 바꿀지 청사진에 명시
+- 정책 확정 전까지는 eval 기준으로만 조정
+
+### 4) summary_type 확장 트리거 명세 보강 (신규)
+
+- `rolling` 외 `checkpoint`, `final` 타입 트리거를 구현 명세로 추가
+- `checkpoint` 후보
+  - 최근 블록과 직전 블록 주제 유사도 급변
+  - 장면 전환 신호어(예: "이제 다른 얘기", "주제 바꿔서")
+- `final` 후보
+  - 종료 발화 패턴 + 세션 비활성 시간 임계
+- `summary_type`별 프롬프트 주입 우선순위 정책 정의
+
+### 5) 멀티캐릭터 데이터 설계 명세 (신규)
+
+- 캐릭터 설정 저장 스키마 제안
+  - `characters(id, name, persona, response_policy, status, updated_at)`
+- 세션-캐릭터 매핑 명세
+  - `sessions(conf_uid, history_uid, char_id, user_id, ...)`
+- 프롬프트 조립 시 하드코딩 제거 경로 명시
+
+### 6) 에러 분류/복구 정책 명세 (신규)
+
+- 오류 유형별 처리 규칙
+  - LLM rate limit: 지수 백오프 + 제한 횟수 재시도
+  - Embedding 실패: 해당 턴 문서 저장 스킵 후 본문 대화는 진행
+  - Supabase 연결 실패: 읽기/쓰기 경로 분리된 fallback
+- 로깅 표준
+  - `error_type`, `stage`, `retry_count`, `request_id`
+- 운영 알림 조건
+  - 동일 오류 연속 N회 이상 시 경고

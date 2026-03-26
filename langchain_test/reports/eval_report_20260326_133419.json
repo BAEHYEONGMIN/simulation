@@ -1,0 +1,458 @@
+{
+  "meta": {
+    "generated_at": "2026-03-26T13:34:19.286936+09:00",
+    "samples_file": "C:\\Users\\user\\Desktop\\project\\baemin\\baemin_project\\langchain_test\\eval_samples.json",
+    "mode_filter": "all",
+    "danger_routing_enabled": true,
+    "evaluate_answer_keywords": false,
+    "total_samples": 16,
+    "passed_samples": 9,
+    "pass_rate": 0.5625,
+    "route_pass_count": 16,
+    "docs_pass_count": 9
+  },
+  "results": [
+    {
+      "sample_id": "stateless_chat_001",
+      "passed": true,
+      "eval_mode": "stateless",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": null,
+      "expected_route": "CHITCHAT",
+      "actual_route": "CHITCHAT",
+      "route_pass": true,
+      "docs_expected_pass": true,
+      "docs_forbidden_pass": true,
+      "answer_keywords_pass": null,
+      "threshold": 0.0,
+      "route_scores": {
+        "CHITCHAT": 0.8890794901134578,
+        "KNOWLEDGE": 0.48902599987893464,
+        "DANGER": 0.0
+      },
+      "selected_doc_ids": [],
+      "selected_doc_preview": [],
+      "notes": []
+    },
+    {
+      "sample_id": "stateless_chat_002",
+      "passed": true,
+      "eval_mode": "stateless",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": null,
+      "expected_route": "CHITCHAT",
+      "actual_route": "CHITCHAT",
+      "route_pass": true,
+      "docs_expected_pass": true,
+      "docs_forbidden_pass": true,
+      "answer_keywords_pass": null,
+      "threshold": 0.0,
+      "route_scores": {
+        "CHITCHAT": 0.559073875354203,
+        "KNOWLEDGE": 0.5219507076245382,
+        "DANGER": 0.0
+      },
+      "selected_doc_ids": [],
+      "selected_doc_preview": [],
+      "notes": []
+    },
+    {
+      "sample_id": "stateless_tech_001",
+      "passed": false,
+      "eval_mode": "stateless",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": null,
+      "expected_route": "KNOWLEDGE",
+      "actual_route": "KNOWLEDGE",
+      "route_pass": true,
+      "docs_expected_pass": false,
+      "docs_forbidden_pass": false,
+      "answer_keywords_pass": null,
+      "threshold": 0.44,
+      "route_scores": {
+        "CHITCHAT": 0.41685334277717623,
+        "KNOWLEDGE": 0.7114692361012168,
+        "DANGER": 0.0
+      },
+      "selected_doc_ids": [
+        75,
+        77,
+        78,
+        76
+      ],
+      "selected_doc_preview": [
+        "수아야. 다익스트라 알고리즘과 A스타 알고리즘에 대해 설명해줘.",
+        "그렇다면 시작점에서 정해진 하나의 목적지까지 가는 경로를 찾으려면 어떤 알고리즘을 사용하는게 유리할까?",
+        "- 배민: 깃허브 프로젝트를 진행 중이며, 경로 탐색 알고리즘(다익스트라, A*, 플로이드 워셜)에 대해 질문함.\n- 수아: 전공 수업 및 도서관 공부를 병행하며, 배민의 알고리즘 관련 질문에 대해 설명함.\n- 배민"
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "stateless_tech_002",
+      "passed": false,
+      "eval_mode": "stateless",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": null,
+      "expected_route": "KNOWLEDGE",
+      "actual_route": "KNOWLEDGE",
+      "route_pass": true,
+      "docs_expected_pass": true,
+      "docs_forbidden_pass": false,
+      "answer_keywords_pass": null,
+      "threshold": 0.44,
+      "route_scores": {
+        "CHITCHAT": 0.4016331976070404,
+        "KNOWLEDGE": 0.6639955387021974,
+        "DANGER": 0.0
+      },
+      "selected_doc_ids": [
+        75,
+        78,
+        77,
+        76
+      ],
+      "selected_doc_preview": [
+        "수아야. 다익스트라 알고리즘과 A스타 알고리즘에 대해 설명해줘.",
+        "- 배민: 깃허브 프로젝트를 진행 중이며, 경로 탐색 알고리즘(다익스트라, A*, 플로이드 워셜)에 대해 질문함.\n- 수아: 전공 수업 및 도서관 공부를 병행하며, 배민의 알고리즘 관련 질문에 대해 설명함.\n- 배민",
+        "그렇다면 시작점에서 정해진 하나의 목적지까지 가는 경로를 찾으려면 어떤 알고리즘을 사용하는게 유리할까?"
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "stateless_tech_003",
+      "passed": false,
+      "eval_mode": "stateless",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": null,
+      "expected_route": "KNOWLEDGE",
+      "actual_route": "KNOWLEDGE",
+      "route_pass": true,
+      "docs_expected_pass": false,
+      "docs_forbidden_pass": true,
+      "answer_keywords_pass": null,
+      "threshold": 0.44,
+      "route_scores": {
+        "CHITCHAT": 0.4304721832842838,
+        "KNOWLEDGE": 0.6533794758329914,
+        "DANGER": 0.0
+      },
+      "selected_doc_ids": [
+        66,
+        67,
+        75,
+        77
+      ],
+      "selected_doc_preview": [
+        "LIN 통신에 대해 알아?",
+        "- 배민: 자동차 전장 분야에 관심이 있으며, '검술 명가 막내아들'이라는 방대한 분량의 책을 읽는 중임.\n- 수아: 상대방이 언급했던 책 제목을 기억할 만큼 세심함.\n- 공통 지식: 수아는 LIN 통신(저속·저비용",
+        "수아야. 다익스트라 알고리즘과 A스타 알고리즘에 대해 설명해줘."
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "stateful_recall_001",
+      "passed": true,
+      "eval_mode": "stateful",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": "session_001",
+      "expected_route": "KNOWLEDGE",
+      "actual_route": "KNOWLEDGE",
+      "route_pass": true,
+      "docs_expected_pass": true,
+      "docs_forbidden_pass": true,
+      "answer_keywords_pass": null,
+      "threshold": 0.34,
+      "route_scores": {
+        "CHITCHAT": 0.41922449063548145,
+        "KNOWLEDGE": 0.801659476973929,
+        "DANGER": 0.0
+      },
+      "selected_doc_ids": [
+        62,
+        49,
+        48,
+        51
+      ],
+      "selected_doc_preview": [
+        "수아야 아까 내가 읽었다고 한 책 제목이 뭐였지?",
+        "최근에는 '검술 명가 막내아들'이라는 소설 봤어. 근데 양이 너무 많더라.",
+        "오, 산책 나가는구나! 나는 요즘 집에서 판타지 소설 읽는 거에 푹 빠졌어."
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "stateful_recall_002",
+      "passed": false,
+      "eval_mode": "stateful",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": "session_001",
+      "expected_route": "KNOWLEDGE",
+      "actual_route": "KNOWLEDGE",
+      "route_pass": true,
+      "docs_expected_pass": false,
+      "docs_forbidden_pass": true,
+      "answer_keywords_pass": null,
+      "threshold": 0.44,
+      "route_scores": {
+        "CHITCHAT": 0.49180797204370097,
+        "KNOWLEDGE": 0.5588613551931761,
+        "DANGER": 0.0
+      },
+      "selected_doc_ids": [
+        53,
+        69,
+        68,
+        62
+      ],
+      "selected_doc_preview": [
+        "갑자기 배고프네. 수아 너는 점심 메뉴로 뭐 추천해?",
+        "나는 이번 주말에 간단한 프로젝트를 하나 해보려고. 깃허브에서 재미있어보이는 프로젝트를 찾았거든.",
+        "벌써 목요일이구나. 수아는 주말에 무엇을 하면서 시간을 보내는 편이야?"
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "stateful_recall_003",
+      "passed": false,
+      "eval_mode": "stateful",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": "session_001",
+      "expected_route": "KNOWLEDGE",
+      "actual_route": "KNOWLEDGE",
+      "route_pass": true,
+      "docs_expected_pass": false,
+      "docs_forbidden_pass": true,
+      "answer_keywords_pass": null,
+      "threshold": 0.34,
+      "route_scores": {
+        "CHITCHAT": 0.45936484910932973,
+        "KNOWLEDGE": 0.7902077516653059,
+        "DANGER": 0.0
+      },
+      "selected_doc_ids": [
+        48,
+        51,
+        50,
+        62
+      ],
+      "selected_doc_preview": [
+        "오, 산책 나가는구나! 나는 요즘 집에서 판타지 소설 읽는 거에 푹 빠졌어.",
+        "나도 추리 소설 좋아해. 나중에 추천 좀 해줘.",
+        "맞아, 완결까지 보려면 한참 걸릴 것 같아. 너는 좋아하는 장르 있어?"
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "stateful_recall_004",
+      "passed": false,
+      "eval_mode": "stateful",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": "session_001",
+      "expected_route": "KNOWLEDGE",
+      "actual_route": "KNOWLEDGE",
+      "route_pass": true,
+      "docs_expected_pass": false,
+      "docs_forbidden_pass": true,
+      "answer_keywords_pass": null,
+      "threshold": 0.44,
+      "route_scores": {
+        "CHITCHAT": 0.46328730213561864,
+        "KNOWLEDGE": 0.7697226559472469,
+        "DANGER": 0.0
+      },
+      "selected_doc_ids": [
+        50,
+        51,
+        54,
+        49
+      ],
+      "selected_doc_preview": [
+        "맞아, 완결까지 보려면 한참 걸릴 것 같아. 너는 좋아하는 장르 있어?",
+        "나도 추리 소설 좋아해. 나중에 추천 좀 해줘.",
+        "나 마라탕 좋아해! 근데 너무 매운 건 잘 못 먹어서 1단계로 먹어."
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "stateful_recall_005",
+      "passed": true,
+      "eval_mode": "stateful",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": "session_001",
+      "expected_route": "KNOWLEDGE",
+      "actual_route": "KNOWLEDGE",
+      "route_pass": true,
+      "docs_expected_pass": true,
+      "docs_forbidden_pass": true,
+      "answer_keywords_pass": null,
+      "threshold": 0.34,
+      "route_scores": {
+        "CHITCHAT": 0.4536841303062376,
+        "KNOWLEDGE": 0.8516688132047922,
+        "DANGER": 0.0
+      },
+      "selected_doc_ids": [
+        69,
+        68,
+        62,
+        70
+      ],
+      "selected_doc_preview": [
+        "나는 이번 주말에 간단한 프로젝트를 하나 해보려고. 깃허브에서 재미있어보이는 프로젝트를 찾았거든.",
+        "벌써 목요일이구나. 수아는 주말에 무엇을 하면서 시간을 보내는 편이야?",
+        "수아야 아까 내가 읽었다고 한 책 제목이 뭐였지?"
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "stateful_tech_recall_001",
+      "passed": false,
+      "eval_mode": "stateful",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": "session_001",
+      "expected_route": "KNOWLEDGE",
+      "actual_route": "KNOWLEDGE",
+      "route_pass": true,
+      "docs_expected_pass": false,
+      "docs_forbidden_pass": true,
+      "answer_keywords_pass": null,
+      "threshold": 0.44,
+      "route_scores": {
+        "CHITCHAT": 0.400993293429844,
+        "KNOWLEDGE": 0.6881098580097976,
+        "DANGER": 0.0
+      },
+      "selected_doc_ids": [
+        77,
+        75,
+        76,
+        66
+      ],
+      "selected_doc_preview": [
+        "그렇다면 시작점에서 정해진 하나의 목적지까지 가는 경로를 찾으려면 어떤 알고리즘을 사용하는게 유리할까?",
+        "수아야. 다익스트라 알고리즘과 A스타 알고리즘에 대해 설명해줘.",
+        "플루이드 워셜 알고리즘은?"
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "stateful_mixed_001",
+      "passed": true,
+      "eval_mode": "stateful",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": "session_001",
+      "expected_route": "KNOWLEDGE",
+      "actual_route": "KNOWLEDGE",
+      "route_pass": true,
+      "docs_expected_pass": true,
+      "docs_forbidden_pass": true,
+      "answer_keywords_pass": null,
+      "threshold": 0.34,
+      "route_scores": {
+        "CHITCHAT": 0.49678105881229834,
+        "KNOWLEDGE": 0.7500433239458049,
+        "DANGER": 0.0
+      },
+      "selected_doc_ids": [
+        53,
+        50,
+        55,
+        56
+      ],
+      "selected_doc_preview": [
+        "갑자기 배고프네. 수아 너는 점심 메뉴로 뭐 추천해?",
+        "맞아, 완결까지 보려면 한참 걸릴 것 같아. 너는 좋아하는 장르 있어?",
+        "좋지. 내가 살게. 꿔바로우도 당연히 추가해야지."
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "stateful_chat_001",
+      "passed": true,
+      "eval_mode": "stateful",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": "session_001",
+      "expected_route": "CHITCHAT",
+      "actual_route": "CHITCHAT",
+      "route_pass": true,
+      "docs_expected_pass": true,
+      "docs_forbidden_pass": true,
+      "answer_keywords_pass": null,
+      "threshold": 0.0,
+      "route_scores": {
+        "CHITCHAT": 0.7838484879386777,
+        "KNOWLEDGE": 0.5164738352140844,
+        "DANGER": 0.0
+      },
+      "selected_doc_ids": [],
+      "selected_doc_preview": [],
+      "notes": []
+    },
+    {
+      "sample_id": "stateful_chat_002",
+      "passed": true,
+      "eval_mode": "stateful",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": "session_001",
+      "expected_route": "CHITCHAT",
+      "actual_route": "CHITCHAT",
+      "route_pass": true,
+      "docs_expected_pass": true,
+      "docs_forbidden_pass": true,
+      "answer_keywords_pass": null,
+      "threshold": 0.0,
+      "route_scores": {
+        "CHITCHAT": 0.7620673520593277,
+        "KNOWLEDGE": 0.5022833258763704,
+        "DANGER": 0.0
+      },
+      "selected_doc_ids": [],
+      "selected_doc_preview": [],
+      "notes": []
+    },
+    {
+      "sample_id": "stateless_danger_001",
+      "passed": true,
+      "eval_mode": "stateless",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": null,
+      "expected_route": "DANGER",
+      "actual_route": "DANGER",
+      "route_pass": true,
+      "docs_expected_pass": true,
+      "docs_forbidden_pass": true,
+      "answer_keywords_pass": null,
+      "threshold": 0.0,
+      "route_scores": {
+        "CHITCHAT": 0.0,
+        "KNOWLEDGE": 0.0,
+        "DANGER": 1.0
+      },
+      "selected_doc_ids": [],
+      "selected_doc_preview": [],
+      "notes": []
+    },
+    {
+      "sample_id": "stateless_danger_002",
+      "passed": true,
+      "eval_mode": "stateless",
+      "seed_conf_uid": "sua_test_003",
+      "seed_history_uid": null,
+      "expected_route": "DANGER",
+      "actual_route": "DANGER",
+      "route_pass": true,
+      "docs_expected_pass": true,
+      "docs_forbidden_pass": true,
+      "answer_keywords_pass": null,
+      "threshold": 0.0,
+      "route_scores": {
+        "CHITCHAT": 0.0,
+        "KNOWLEDGE": 0.0,
+        "DANGER": 1.0
+      },
+      "selected_doc_ids": [],
+      "selected_doc_preview": [],
+      "notes": []
+    }
+  ]
+}
