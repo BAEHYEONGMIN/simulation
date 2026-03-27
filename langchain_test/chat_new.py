@@ -19,11 +19,11 @@ input_version.py (저장/임베딩/검색) + test.py (프롬프트/LLM 호출) �
 import os
 import sys
 import re
+import json
 import asyncio
 import threading
 from uuid import uuid4
 from datetime import datetime, timezone
-from concurrent.futures import ThreadPoolExecutor
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -33,6 +33,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.prompts import MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnableLambda, RunnableParallel
 
 from config import (
     SUPABASE_URL, SUPABASE_KEY,
@@ -45,6 +46,7 @@ try:
         CHARACTER_PERSONA,
         SYSTEM_PROMPT_TEMPLATE,
         SUMMARY_PROMPT_TEMPLATE,
+        SUMMARY_QC_PROMPT_TEMPLATE,
         get_mode_instruction,
         build_memory_extraction_prompt,
     )
@@ -105,6 +107,9 @@ try:
         TECH_KEYWORD_BONUS, TECH_QUERY_NOISE_PENALTY, LIFESTYLE_KEYWORDS,
         ONE_CHAR_KEYWORDS, JOSA_SUFFIXES, JOSA_SUFFIXES_SORTED,
         NOISE_EXACT_PATTERNS, NOISE_PREFIX_PATTERNS, MEMORY_SIGNAL_PATTERNS,
+        POST_FILTER_MIN_KEYWORD_OVERLAP, POST_FILTER_MIN_TEXT_LEN,
+        POST_FILTER_MAX_SUMMARY_RATIO, POST_FILTER_RECALL_MIN_CHAT_DOCS,
+        POST_FILTER_ENABLE_DEDUP, POST_FILTER_MAX_PER_ORIGIN_GROUP,
     )
 except ImportError:
     from langchain_test.chat_modules.prompting import (
@@ -112,6 +117,7 @@ except ImportError:
         CHARACTER_PERSONA,
         SYSTEM_PROMPT_TEMPLATE,
         SUMMARY_PROMPT_TEMPLATE,
+        SUMMARY_QC_PROMPT_TEMPLATE,
         get_mode_instruction,
         build_memory_extraction_prompt,
     )
@@ -168,11 +174,14 @@ except ImportError:
     STORE_FACT_HINTS, INPUT_MODE_NORMAL, INPUT_MODE_OOC, INPUT_MODE_IC, INPUT_MODE_MIXED,
     OOC_IC_PATTERN_STR, OOC_IC_SEGMENT_PATTERN_STR, DANGER_FALLBACK_RESPONSE,
     ALLOWED_MEMORY_TYPES, ALLOWED_MEMORY_KEYS, DEFAULT_IMPORTANCE_BY_TYPE, MEMORY_NORMALIZATION_MAP,
-    RECALL_HINT_PATTERNS, KEYWORD_STOPWORDS, KEYWORD_SYNONYMS, TECH_KEYWORDS,
-    TECH_KEYWORD_BONUS, TECH_QUERY_NOISE_PENALTY, LIFESTYLE_KEYWORDS,
-    ONE_CHAR_KEYWORDS, JOSA_SUFFIXES, JOSA_SUFFIXES_SORTED,
-    NOISE_EXACT_PATTERNS, NOISE_PREFIX_PATTERNS, MEMORY_SIGNAL_PATTERNS,
-)
+      RECALL_HINT_PATTERNS, KEYWORD_STOPWORDS, KEYWORD_SYNONYMS, TECH_KEYWORDS,
+      TECH_KEYWORD_BONUS, TECH_QUERY_NOISE_PENALTY, LIFESTYLE_KEYWORDS,
+      ONE_CHAR_KEYWORDS, JOSA_SUFFIXES, JOSA_SUFFIXES_SORTED,
+      NOISE_EXACT_PATTERNS, NOISE_PREFIX_PATTERNS, MEMORY_SIGNAL_PATTERNS,
+      POST_FILTER_MIN_KEYWORD_OVERLAP, POST_FILTER_MIN_TEXT_LEN,
+      POST_FILTER_MAX_SUMMARY_RATIO, POST_FILTER_RECALL_MIN_CHAT_DOCS,
+      POST_FILTER_ENABLE_DEDUP, POST_FILTER_MAX_PER_ORIGIN_GROUP,
+  )
 
 _summary_state_lock = threading.Lock()
 _summary_inflight_sessions: set[tuple[str, str]] = set()
@@ -222,6 +231,31 @@ def open_session_log_file() -> tuple[str, object]:
     log_path = os.path.join(LOG_DIR, log_name)
     log_fp = open(log_path, "a", encoding="utf-8", buffering=1)
     return log_path, log_fp
+
+
+_LOG_LEVEL_MAP = {
+    "DEBUG": 10,
+    "INFO": 20,
+    "ERROR": 40,
+}
+_ACTIVE_LOG_LEVEL = _LOG_LEVEL_MAP.get(os.getenv("CHAT_LOG_LEVEL", "INFO").upper(), 20)
+
+
+def _should_emit(level: str) -> bool:
+    return _LOG_LEVEL_MAP.get(level, 20) >= _ACTIVE_LOG_LEVEL
+
+
+def log_event(level: str, event: str, trace_id: str | None = None, **fields) -> None:
+    if not _should_emit(level):
+        return
+    payload = {
+        "ts": datetime.now(timezone.utc).astimezone().isoformat(),
+        "level": level,
+        "event": event,
+        "trace_id": trace_id,
+        **fields,
+    }
+    print(json.dumps(payload, ensure_ascii=False, default=str))
 
 
 def maybe_prepare_context_cache(
@@ -537,6 +571,192 @@ def rerank_documents(
     return scored[:final_k]
 
 
+def _doc_metadata(doc: dict) -> dict:
+    metadata = doc.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _doc_text_tokens(content: str) -> set[str]:
+    tokens = set()
+    for tok in re.findall(r"[0-9a-zA-Z가-힣]+", (content or "").lower()):
+        norm = normalize_keyword_token(tok)
+        if not norm:
+            continue
+        if norm in KEYWORD_STOPWORDS:
+            continue
+        if len(norm) < 2 and norm not in ONE_CHAR_KEYWORDS:
+            continue
+        tokens.add(norm)
+    return tokens
+
+
+def _is_noise_doc(content: str) -> bool:
+    text = (content or "").strip().lower()
+    if not text:
+        return True
+    if text in NOISE_EXACT_PATTERNS:
+        return True
+    if text.startswith(NOISE_PREFIX_PATTERNS) and len(text) <= 6:
+        return True
+    return False
+
+
+def _is_hard_excluded_doc(doc: dict) -> tuple[bool, str | None]:
+    content = (doc.get("content") or "").strip()
+    if _is_noise_doc(content):
+        return True, "noise"
+
+    metadata = _doc_metadata(doc)
+    if bool(metadata.get("is_segment")) and str(metadata.get("segment_mode", "")).upper() == INPUT_MODE_OOC:
+        return True, "ooc_segment"
+    if bool(metadata.get("has_tagged_segment")):
+        return True, "tagged_origin"
+    if str(metadata.get("input_mode", INPUT_MODE_NORMAL)).upper() == INPUT_MODE_OOC:
+        return True, "ooc_input"
+    return False, None
+
+
+def _enforce_origin_group_cap(docs: list[dict], max_per_group: int, removed: dict[str, int]) -> list[dict]:
+    if max_per_group <= 0:
+        return docs
+    out: list[dict] = []
+    group_count: dict[str, int] = {}
+    for d in docs:
+        metadata = _doc_metadata(d)
+        group_id = str(metadata.get("origin_group_id") or "")
+        if not group_id:
+            out.append(d)
+            continue
+        if group_count.get(group_id, 0) >= max_per_group:
+            removed["origin_group_cap"] = removed.get("origin_group_cap", 0) + 1
+            continue
+        group_count[group_id] = group_count.get(group_id, 0) + 1
+        out.append(d)
+    return out
+
+
+def _dedup_docs(docs: list[dict], removed: dict[str, int]) -> list[dict]:
+    out: list[dict] = []
+    seen_signatures: set[str] = set()
+    for d in docs:
+        signature = " ".join(sorted(_doc_text_tokens(d.get("content") or "")))
+        if not signature:
+            signature = (d.get("content") or "").strip().lower()
+        if signature in seen_signatures:
+            removed["dedup"] = removed.get("dedup", 0) + 1
+            continue
+        seen_signatures.add(signature)
+        out.append(d)
+    return out
+
+
+def apply_post_filters(
+    *,
+    candidates: list[dict],
+    query_terms: list[str],
+    recall_mode: bool,
+    final_k: int,
+    fallback_pool: list[dict] | None = None,
+) -> tuple[list[dict], dict[str, int]]:
+    """재랭크 결과에 규칙 기반 후처리 필터를 적용한다.
+
+    - 점수 계산(재랭크)과 제거 규칙(필터)을 분리한다.
+    - LLM 호출 없이 룰 기반으로만 동작한다.
+    """
+    removed: dict[str, int] = {}
+    fallback_pool = fallback_pool or []
+    min_overlap = max(0, POST_FILTER_MIN_KEYWORD_OVERLAP - (1 if recall_mode else 0))
+
+    # 1) 하드 제외(OOC/노이즈/원문 태그)
+    filtered: list[dict] = []
+    for d in candidates:
+        excluded, reason = _is_hard_excluded_doc(d)
+        if excluded:
+            removed[reason or "hard_excluded"] = removed.get(reason or "hard_excluded", 0) + 1
+            continue
+        filtered.append(d)
+
+    # 2) 길이/오버랩 필터
+    query_set = set(query_terms)
+    overlap_filtered: list[dict] = []
+    for d in filtered:
+        content = (d.get("content") or "").strip()
+        if len(content) < POST_FILTER_MIN_TEXT_LEN:
+            removed["short_text"] = removed.get("short_text", 0) + 1
+            continue
+
+        if query_set:
+            doc_tokens = _doc_text_tokens(content)
+            overlap_count = len(query_set.intersection(doc_tokens))
+            d["keyword_overlap"] = overlap_count
+            if overlap_count < min_overlap:
+                removed["low_overlap"] = removed.get("low_overlap", 0) + 1
+                continue
+        overlap_filtered.append(d)
+    filtered = overlap_filtered
+
+    # 3) 중복 제어
+    filtered.sort(key=lambda x: x.get("rank_score", 0.0), reverse=True)
+    filtered = _enforce_origin_group_cap(filtered, POST_FILTER_MAX_PER_ORIGIN_GROUP, removed)
+    if POST_FILTER_ENABLE_DEDUP:
+        filtered = _dedup_docs(filtered, removed)
+
+    # 4) 소스 비율 제어(summary 과다 방지)
+    max_summary = max(1, int(round(final_k * POST_FILTER_MAX_SUMMARY_RATIO)))
+    summary_kept = 0
+    ratio_adjusted: list[dict] = []
+    for d in filtered:
+        source_type = d.get("source_type") or extract_source_type(d) or "unknown"
+        if source_type == "summary":
+            if summary_kept >= max_summary:
+                removed["summary_ratio"] = removed.get("summary_ratio", 0) + 1
+                continue
+            summary_kept += 1
+        ratio_adjusted.append(d)
+    filtered = ratio_adjusted
+
+    # 5) 회상형에서 chat_message 최소 보장
+    if recall_mode:
+        chat_docs = [d for d in filtered if (d.get("source_type") or extract_source_type(d)) == "chat_message"]
+        need = max(0, POST_FILTER_RECALL_MIN_CHAT_DOCS - len(chat_docs))
+        if need > 0:
+            existing_ids = {d.get("id") for d in filtered}
+            for d in sorted(fallback_pool, key=lambda x: x.get("rank_score", 0.0), reverse=True):
+                if need <= 0:
+                    break
+                if d.get("id") in existing_ids:
+                    continue
+                source_type = d.get("source_type") or extract_source_type(d)
+                if source_type != "chat_message":
+                    continue
+                excluded, _ = _is_hard_excluded_doc(d)
+                if excluded:
+                    continue
+                filtered.append(d)
+                existing_ids.add(d.get("id"))
+                need -= 1
+                removed["recall_chat_backfill"] = removed.get("recall_chat_backfill", 0) + 1
+
+    # 6) 결과가 과도하게 줄어들면 완화 백필
+    target_min = max(1, min(final_k, 2))
+    if len(filtered) < target_min:
+        existing_ids = {d.get("id") for d in filtered}
+        for d in sorted(fallback_pool, key=lambda x: x.get("rank_score", 0.0), reverse=True):
+            if len(filtered) >= target_min:
+                break
+            if d.get("id") in existing_ids:
+                continue
+            excluded, _ = _is_hard_excluded_doc(d)
+            if excluded:
+                continue
+            filtered.append(d)
+            existing_ids.add(d.get("id"))
+            removed["fallback_backfill"] = removed.get("fallback_backfill", 0) + 1
+
+    filtered.sort(key=lambda x: x.get("rank_score", 0.0), reverse=True)
+    return filtered[:final_k], removed
+
+
 def _extract_input_mode_from_metadata(metadata: dict | None) -> str:
     if not isinstance(metadata, dict):
         return INPUT_MODE_NORMAL
@@ -688,9 +908,60 @@ def schedule_background_db_task(
         try:
             done_task.result()
         except Exception as e:
-            print(f"[DB-BG-ERROR] {label}: {e}")
+            log_event("ERROR", "db_background_task_failed", label=label, error=str(e))
 
     task.add_done_callback(_on_done)
+
+
+def fetch_prompt_context_parallel(
+    *,
+    conf_uid: str,
+    history_uid: str,
+    char_id: str,
+    user_id: str,
+) -> dict:
+    """CHITCHAT/DANGER 경로 공통 컨텍스트 조회를 RunnableParallel로 실행."""
+    runner = RunnableParallel(
+        history=RunnableLambda(
+            lambda _: fetch_recent_messages(conf_uid, history_uid, PROMPT_HISTORY_LIMIT)
+        ),
+        summaries=RunnableLambda(
+            lambda _: fetch_recent_summaries_for_prompt(conf_uid, history_uid, PROMPT_SUMMARY_LIMIT)
+        ),
+        memories=RunnableLambda(
+            lambda _: fetch_active_memories(conf_uid, char_id, user_id, PROMPT_MEMORY_LIMIT)
+        ),
+    )
+    return runner.invoke({})
+
+
+def fetch_knowledge_context_parallel(
+    *,
+    query_embedding: list[float],
+    conf_uid: str,
+    history_uid: str,
+    char_id: str,
+    user_id: str,
+) -> dict:
+    """KNOWLEDGE 경로 조회(RAG + 프롬프트 컨텍스트)를 RunnableParallel로 실행."""
+    runner = RunnableParallel(
+        vector_docs=RunnableLambda(
+            lambda _: find_similar_documents(query_embedding, conf_uid, history_uid, RAG_VECTOR_TOP_K)
+        ),
+        keyword_pool_docs=RunnableLambda(
+            lambda _: fetch_recent_documents_for_keyword(conf_uid, history_uid, RAG_KEYWORD_POOL_LIMIT)
+        ),
+        history=RunnableLambda(
+            lambda _: fetch_recent_messages(conf_uid, history_uid, PROMPT_HISTORY_LIMIT)
+        ),
+        summaries=RunnableLambda(
+            lambda _: fetch_recent_summaries_for_prompt(conf_uid, history_uid, PROMPT_SUMMARY_LIMIT)
+        ),
+        memories=RunnableLambda(
+            lambda _: fetch_active_memories(conf_uid, char_id, user_id, PROMPT_MEMORY_LIMIT)
+        ),
+    )
+    return runner.invoke({})
 
 
 async def run_chat_loop() -> None:
@@ -712,6 +983,7 @@ async def run_chat_loop() -> None:
     print(f"[모델] LLM={CHAT_MODEL} / Embedding={EMBEDDING_MODEL}")
     print("대화를 시작합니다. 종료: exit / quit / q")
     print("=" * 80)
+    log_event("INFO", "session_started", log_path=log_path, llm_model=CHAT_MODEL, embedding_model=EMBEDDING_MODEL)
     initialize_router_if_needed()
     pending_bg_tasks: set[asyncio.Task] = set()
 
@@ -719,6 +991,8 @@ async def run_chat_loop() -> None:
         while True:
             raw_user_input = (await asyncio.to_thread(input, "나: ")).strip()
             print(f"[사용자 입력] {raw_user_input}")
+            trace_id = f"{history_uid}:{uuid4().hex[:12]}"
+            log_event("INFO", "user_input_received", trace_id=trace_id, input_text=raw_user_input)
 
             if raw_user_input.lower() in {"exit", "quit", "q"}:
                 print("종료합니다.")
@@ -742,30 +1016,41 @@ async def run_chat_loop() -> None:
                 # 1) 임베딩 생성 (라우팅 + RAG 검색에 모두 재활용)
                 query_embedding = generate_embedding(user_input)
                 route_label, route_scores = classify_route(user_input, query_embedding)
+                log_event(
+                    "INFO",
+                    "route_decision",
+                    trace_id=trace_id,
+                    route=route_label,
+                    scores=route_scores,
+                    input_mode=input_mode,
+                )
 
                 # 2) 라우팅 기반 데이터 수집
                 if route_label == ROUTE_CHITCHAT or (ENABLE_DANGER_ROUTING and route_label == ROUTE_DANGER):
-                    with ThreadPoolExecutor() as executor:
-                        future_history = executor.submit(fetch_recent_messages, conf_uid, history_uid, PROMPT_HISTORY_LIMIT)
-                        future_summaries = executor.submit(fetch_recent_summaries_for_prompt, conf_uid, history_uid, PROMPT_SUMMARY_LIMIT)
-                        future_memories = executor.submit(fetch_active_memories, conf_uid, char_id, user_id, PROMPT_MEMORY_LIMIT)
-                        history = future_history.result()
-                        summary_rows = future_summaries.result()
-                        memory_rows = future_memories.result()
+                    context_result = fetch_prompt_context_parallel(
+                        conf_uid=conf_uid,
+                        history_uid=history_uid,
+                        char_id=char_id,
+                        user_id=user_id,
+                    )
+                    history = context_result["history"]
+                    summary_rows = context_result["summaries"]
+                    memory_rows = context_result["memories"]
                     vector_docs_raw = []
                     keyword_pool_docs = []
                 else:
-                    with ThreadPoolExecutor() as executor:
-                        future_docs = executor.submit(find_similar_documents, query_embedding, conf_uid, history_uid, RAG_VECTOR_TOP_K)
-                        future_keyword_docs = executor.submit(fetch_recent_documents_for_keyword, conf_uid, history_uid, RAG_KEYWORD_POOL_LIMIT)
-                        future_history = executor.submit(fetch_recent_messages, conf_uid, history_uid, PROMPT_HISTORY_LIMIT)
-                        future_summaries = executor.submit(fetch_recent_summaries_for_prompt, conf_uid, history_uid, PROMPT_SUMMARY_LIMIT)
-                        future_memories = executor.submit(fetch_active_memories, conf_uid, char_id, user_id, PROMPT_MEMORY_LIMIT)
-                        vector_docs_raw = future_docs.result()
-                        keyword_pool_docs = future_keyword_docs.result()
-                        history = future_history.result()
-                        summary_rows = future_summaries.result()
-                        memory_rows = future_memories.result()
+                    context_result = fetch_knowledge_context_parallel(
+                        query_embedding=query_embedding,
+                        conf_uid=conf_uid,
+                        history_uid=history_uid,
+                        char_id=char_id,
+                        user_id=user_id,
+                    )
+                    vector_docs_raw = context_result["vector_docs"]
+                    keyword_pool_docs = context_result["keyword_pool_docs"]
+                    history = context_result["history"]
+                    summary_rows = context_result["summaries"]
+                    memory_rows = context_result["memories"]
 
                 previous_summary = fmt_recent_summaries(summary_rows)
                 long_memories = fmt_long_memories(memory_rows)
@@ -794,11 +1079,30 @@ async def run_chat_loop() -> None:
                         excluded_current_summary_end_ids=excluded_summary_end_ids,
                     )
                     THRESHOLD = RAG_THRESHOLD_RECALL if recall_mode else RAG_THRESHOLD_DEFAULT
-                    similar_docs = [d for d in similar_docs_raw if d.get('rank_score', 0) >= THRESHOLD][:RAG_PROMPT_DOCS_MAX]
+                    threshold_pass_docs = [d for d in similar_docs_raw if d.get("rank_score", 0) >= THRESHOLD]
+                    similar_docs, post_filter_removed = apply_post_filters(
+                        candidates=threshold_pass_docs,
+                        query_terms=terms_for_debug,
+                        recall_mode=recall_mode,
+                        final_k=RAG_PROMPT_DOCS_MAX,
+                        fallback_pool=similar_docs_raw,
+                    )
                 else:
                     similar_docs_raw = []
                     THRESHOLD = RAG_THRESHOLD_RECALL if recall_mode else RAG_THRESHOLD_DEFAULT
                     similar_docs = []
+                    post_filter_removed = {}
+                log_event(
+                    "INFO",
+                    "retrieval_selected",
+                    trace_id=trace_id,
+                    route=route_label,
+                    threshold=THRESHOLD,
+                    reranked_count=len(similar_docs_raw),
+                    selected_count=len(similar_docs),
+                    selected_doc_ids=[d.get("id") for d in similar_docs],
+                    post_filter_removed=post_filter_removed,
+                )
 
                 if DEBUG:
                     print("\n" + "=" * 80)
@@ -817,6 +1121,8 @@ async def run_chat_loop() -> None:
                             print(f" ❌ [점수 {rank_score:.3f} | vec {sim:.3f} | key {kscore:.3f} | tech {tbonus:.3f} | {source_type}] (버려짐) {d['content']}")
                     if not similar_docs_raw:
                         print(" - 검색된 문서 없음")
+                    if post_filter_removed:
+                        print(f"[후처리 필터 제거 통계] {post_filter_removed}")
                     print("=" * 80)
 
                 if DEBUG:
@@ -863,6 +1169,7 @@ async def run_chat_loop() -> None:
                     print("=" * 80)
                 else:
                     answer = await stream_answer(chain_inputs, char_name)
+                log_event("INFO", "llm_answer_generated", trace_id=trace_id, answer_len=len(answer))
 
                 # 5) 사용자 원문 저장 + 세그먼트 저장 (추적용)
                 origin_group_id = f"{history_uid}:{uuid4().hex}"
@@ -884,6 +1191,7 @@ async def run_chat_loop() -> None:
                         "duplicate_tag_ignored": duplicate_tag_ignored,
                     },
                 )
+                log_event("DEBUG", "user_message_saved", trace_id=trace_id, message_id=saved_user_msg.get("id"))
 
                 # 분리 세그먼트 저장: 태그(OOC/IC)가 실제 포함된 경우에만 저장.
                 # 태그가 전혀 없는 일반 입력은 원문 1건만 저장해 중복을 방지한다.
@@ -988,6 +1296,7 @@ async def run_chat_loop() -> None:
                     reply_to_message_id=saved_user_msg["id"],
                     metadata=ai_meta,
                 )
+                log_event("DEBUG", "ai_message_saved", trace_id=trace_id, reply_to=saved_user_msg.get("id"))
 
                 # 8) 장기 기억 추출(비동기): OOC-only 입력은 제외, 그 외는 5턴 배치 처리
                 if not has_ooc_only:
@@ -1003,6 +1312,7 @@ async def run_chat_loop() -> None:
                         history_uid=history_uid,
                     )
                     print(f"[🧠 메모리 진행] 마지막 처리 user_id={mem_last_id}, 미처리 사용자발화={mem_pending}개")
+                    log_event("DEBUG", "memory_progress", trace_id=trace_id, last_user_message_id=mem_last_id, pending_user_messages=mem_pending)
 
                 # 9) 대화 요약 진행상태 출력 + 백그라운드 트리거
                 # DANGER 응답은 후속 요약 맥락 오염을 막기 위해 요약 큐에서 제외
@@ -1010,14 +1320,17 @@ async def run_chat_loop() -> None:
                     if DEBUG:
                         last_id, pending_count = get_summary_progress(conf_uid, history_uid)
                         print(f"[📊 요약 트리거] 마지막 요약 id={last_id}, 미처리 메시지={pending_count}개")
+                        log_event("DEBUG", "summary_progress", trace_id=trace_id, last_summary_end_id=last_id, pending_messages=pending_count)
                     if not has_ooc_only:
                         queue_summarization_job(conf_uid, history_uid)
 
             except Exception as e:
                 print(f"\n[오류] {e}\n")
+                log_event("ERROR", "turn_failed", trace_id=trace_id, error=str(e))
     finally:
         if pending_bg_tasks:
             await asyncio.gather(*pending_bg_tasks, return_exceptions=True)
+        log_event("INFO", "session_finished", log_path=log_path)
         print(f"[종료 시각] {datetime.now(timezone.utc).astimezone().isoformat()}")
         sys.stdout = original_stdout
         sys.stderr = original_stderr
@@ -1184,6 +1497,55 @@ def queue_summarization_job(conf_uid: str, history_uid: str) -> None:
     worker.start()
 
 
+def _extract_json_object(text: str) -> dict | None:
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    candidate = raw[start : end + 1]
+    try:
+        return json.loads(candidate)
+    except Exception:
+        return None
+
+
+def validate_and_refine_summary_with_llm(
+    *,
+    prev_summary_text: str,
+    bridge_text: str,
+    new_block_text: str,
+    draft_summary: str,
+) -> tuple[str, str]:
+    """LLM 1회 품질검증으로 요약 초안을 보정한다.
+
+    returns: (final_summary, verdict)
+    """
+    qc_prompt = SUMMARY_QC_PROMPT_TEMPLATE.format(
+        prev_summary_text=prev_summary_text,
+        bridge_text=bridge_text,
+        new_block_text=new_block_text,
+        draft_summary=draft_summary,
+    )
+    qc_raw = summary_llm.invoke(qc_prompt).content
+    qc_obj = _extract_json_object(qc_raw)
+    if not isinstance(qc_obj, dict):
+        log_event("ERROR", "summary_qc_parse_failed", raw_response=str(qc_raw)[:500])
+        return draft_summary, "PASS_FALLBACK"
+
+    verdict = str(qc_obj.get("verdict", "PASS")).upper()
+    revised_summary = str(qc_obj.get("revised_summary", "")).strip()
+    if verdict == "REWRITE" and revised_summary:
+        return revised_summary, verdict
+    return draft_summary, verdict
+
+
 def summarize_and_save(
     conf_uid: str,
     history_uid: str,
@@ -1225,7 +1587,21 @@ def summarize_and_save(
     )
 
     raw_summary_text = summary_llm.invoke(summary_prompt).content
-    new_summary_text = fmt_normalize_summary(raw_summary_text)
+    draft_summary_text = fmt_normalize_summary(raw_summary_text)
+    refined_summary_text, qc_verdict = validate_and_refine_summary_with_llm(
+        prev_summary_text=prev_summary_text,
+        bridge_text=bridge_text,
+        new_block_text=new_block_text,
+        draft_summary=draft_summary_text,
+    )
+    new_summary_text = fmt_normalize_summary(refined_summary_text)
+    log_event(
+        "INFO",
+        "summary_qc_completed",
+        verdict=qc_verdict,
+        draft_len=len(draft_summary_text),
+        final_len=len(new_summary_text),
+    )
 
     if DEBUG:
         print(f"\n[📝 누적 요약 완료]\n{new_summary_text}\n")

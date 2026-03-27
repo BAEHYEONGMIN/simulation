@@ -30,7 +30,7 @@
 | #   | 한계점                                        | 영향                                                                                                               | 관련 스터디                |
 | --- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | -------------------------- |
 | 1   | **대화 이력 포맷 혼재 (문자열 디버그 + 메시지 객체 주입)** | 프롬프트 주입은 `MessagesPlaceholder`로 개선 완료. 다만 일부 디버그/캐시 경로에 문자열 포맷이 공존해 포맷 일관성 관리 필요 | 테마 12                    |
-| 2   | **RunnableParallel 미적용 (현재 ThreadPoolExecutor 사용)** | 병렬 조회는 해결됐지만 LangChain 파이프라인 일관성/가독성 측면에서 목표 아키텍처와 차이 존재                      | 테마 11 (RunnableParallel) |
+| 2   | **RunnableParallel 적용 완료 (조회 체인 전환)** | ThreadPoolExecutor 기반 병렬 조회를 RunnableParallel로 전환해 LCEL 일관성을 확보함                      | 테마 11 (RunnableParallel) |
 | 3   | **모든 질문에 RAG 검색 수행**                 | "안녕", "잘 자" 같은 일상 대화에도 임베딩+벡터 검색을 돌림. 토큰/시간 낭비                                         | 테마 8 (Semantic Routing)  |
 | 4   | **대화가 길어지면 토큰 폭발**                 | `limit=8`로 단순 자르기만 함. 과거 대화의 맥락이 증발하여 챗봇이 '치매' 증상 보임                                  | 테마 12, checklist 항목    |
 | 5   | **장기 기억(취향/프로필) 시스템 부재**        | 유저가 "나 판타지 좋아해"라고 해도 다음 세션에는 까먹음                                                            | 테마 1 (Pydantic)          |
@@ -347,7 +347,7 @@ langchain_test/
 | ---------------------------- | ---------------------------------- | ----------------------------- |
 | `chain.invoke()`             | `chain.astream()`                  | 유저에게 실시간 스트리밍 응답 |
 | `insert_message()` 순차 호출 | `asyncio.create_task()` 백그라운드 | 유저는 저장 완료를 안 기다림  |
-| 이력/키워드/요약 조회 순차   | `ThreadPoolExecutor` 4-way 병렬 (추후 `RunnableParallel` 전환) | 응답 시작 시간 단축 |
+| 이력/키워드/요약 조회 순차   | `RunnableParallel` 병렬 조회 | 응답 시작 시간 단축 |
 
 #### FastAPI 서버화 시 (3순위)
 
@@ -585,7 +585,7 @@ async def chat_endpoint(request: ChatRequest):
   - [x] 회상형 질의 의도 기반 가중치 적용
   - [x] `source_type` 기반 점수 보정 (`chat_message` 우선)
   - [x] 디버그 출력에 `vec/key/rank/source` 점수 분해 노출
-  - [ ] 검색 후처리 필터 기준 고도화 (재랭크와 분리 운영)
+  - [x] 검색 후처리 필터 기준 고도화 (재랭크와 분리 운영) (done 2026-03-27)
 - [x] 패턴/사전 기반 보정 적용 (`chat_new.py` 기준)
   - [x] 회상 질문 패턴 분류 (`RECALL_HINT_PATTERNS`)
   - [x] 조사 제거 토큰 정규화 (`normalize_keyword_token`)
@@ -632,7 +632,7 @@ async def chat_endpoint(request: ChatRequest):
   - [x] 요약 진행 로그를 메인 루프에서 출력하도록 조정 (입력창 간섭 완화) (2026-03-25 완료)
   - [x] 메시지 INSERT/문서 INSERT 전체를 백그라운드 태스크로 분리 (2026-03-26 완료)
   - [ ] FastAPI 환경 기준 `async` DB I/O 경로로 통일
-  - [ ] `RunnableParallel`로 조회 체인 마이그레이션 (현재 ThreadPoolExecutor)
+  - [x] `RunnableParallel`로 조회 체인 마이그레이션 (done 2026-03-27)
 
 ### Phase 4: 서비스화 (3순위)
 
@@ -643,8 +643,8 @@ async def chat_endpoint(request: ChatRequest):
 ### 운영/디버깅 (신규 보강)
 
 - [x] 콘솔 출력 로그 파일 저장 (`langchain_test/logs/chat_session_YYYYMMDD.log`) (2026-03-25 완료)
-- [ ] 로그 레벨 분리 (`INFO`/`DEBUG`/`ERROR`) 및 JSON 구조화
-- [ ] 요청 단위 trace id 추가 (검색/프롬프트/요약 상관관계 추적)
+- [x] 로그 레벨 분리 (`INFO`/`DEBUG`/`ERROR`) 및 JSON 구조화 (done 2026-03-27)
+- [x] 요청 단위 trace id 추가 (검색/프롬프트/요약 상관관계 추적) (done 2026-03-27)
 
 ### 캐싱/성능 (신규 보강)
 
@@ -657,11 +657,18 @@ async def chat_endpoint(request: ChatRequest):
 
 - [ ] 동의어 사전(`KEYWORD_SYNONYMS`) 운영 프로세스 정착
 - [ ] 회상 패턴/노이즈 패턴 사전 운영 프로세스 정착
+- [ ] 메모리 검색 풀 분리 설계 (`source_type=memory` 별도 조회 + 메타 필터)
+  - [ ] memory 조회 시 `status=active`, `memory_type` 허용 목록, 만료(`expires_at`) 필터 적용
+  - [ ] 일반 RAG(`chat_message/summary`)와 memory RAG를 분리 조회 후 결합
+  - [ ] memory 주입 상한(기본 1~2개) + 의도 기반 완화 규칙 정의
 - [ ] 회상형 질문 자동 평가셋 구축(제목/이름/숫자) — **보류(대화 데이터 충분 축적 후 진행)**
 - [ ] 하이브리드 랭킹 가중치 A/B 테스트 및 고정 — **보류(평가셋 안정화 이후)**
 - [x] Evals 러너 구축 (`eval_runner.py`) (done 2026-03-26)
   - [x] 검증 정책: eval_runner는 상시 필수 아님 (라우팅/검색 로직 변경 시 또는 릴리즈 전 실행)
-  - [x] `eval_samples.json` schema finalized (`eval_mode`, `seed_conf_uid`, `seed_history_uid`, `expected_route`, `expected_doc_keywords`, `forbidden_doc_keywords`, `expected_answer_keywords`) (done 2026-03-26)
+  - [x] `eval_samples.json` schema finalized (`eval_mode`, `seed_conf_uid`, `seed_history_uid`, `expected_route`, `expected_doc_keywords`, `expected_summary_keywords`, `expected_keyword_scope`, `forbidden_doc_keywords`, `expected_answer_keywords`) (updated 2026-03-27)
+  - [x] `eval_runner.py` keyword expectation split (`docs_expected_pass` vs `summary_expected_pass`) + scope policy (`docs|summary|either`) (done 2026-03-27)
+  - [x] 기본 실행에서 DANGER 샘플 제외, `--danger-routing` 실행 시에만 포함 (done 2026-03-27)
+  - [x] OOC stateful 샘플 추가 (`stateful_ooc_001`, `stateful_ooc_002`) (done 2026-03-27)
   - [ ] 라우팅 정확도/검색 노이즈율/답변 키워드 커버리지 리포트 출력 — **보류(데이터 축적 후)**
   - [ ] 튜닝 반려 기준 명시 (라우팅 정확도 하락, 노이즈율 상승 시 반려) — **보류(데이터 축적 후)**
 - [ ] 임계값(`0.34/0.44`) 상수화 및 실험 기반 재설정 — **보류(평가셋 충분 확보 후)**
@@ -703,7 +710,7 @@ async def chat_endpoint(request: ChatRequest):
 - **개선 반영:** 요약 트리거는 백그라운드로 넘겨 유저 입력 블로킹을 제거함.
 - **개선 반영:** 이벤트 루프를 단일화하여 `Event loop is closed` 재발 가능성을 낮춤.
 - **개선 반영:** 요약 진행 상태(`미처리 메시지`)는 메인 루프에서 출력해 프롬프트 간섭을 줄임.
-- **잔여 과제:** `insert_message`/`insert_document` 등 저장 경로는 아직 동기 호출이므로, 서버화 단계에서 `BackgroundTasks` + async DB로 전환 필요.
+- **잔여 과제:** CLI 기준 `insert_message`/`insert_document` 저장 경로는 백그라운드 분리가 완료됨. 서버화 단계에서는 FastAPI `BackgroundTasks` + async DB I/O 경로로 재정렬 필요.
 - **추가 과제:** 컨텍스트 캐시(L1/L2) 도입으로 프롬프트 조립 및 DB 재조회 비용을 줄여 P95 지연을 추가로 낮출 것.
 - **향후 계획:** FastAPI 전환 시 `StreamingResponse(chain.astream(...))` + 후처리 태스크 분리를 표준 경로로 고정.
 

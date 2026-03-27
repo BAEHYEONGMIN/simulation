@@ -58,6 +58,7 @@ SYSTEM_PROMPT_TEMPLATE = load_prompt_text("chat_system_template.txt")
 
 
 SUMMARY_PROMPT_TEMPLATE = load_prompt_text("summary_prompt_template.txt")
+SUMMARY_QC_PROMPT_TEMPLATE = load_prompt_text("summary_quality_check_template.txt")
 
 
 def build_memory_extraction_prompt(
