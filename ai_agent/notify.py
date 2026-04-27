@@ -12,7 +12,8 @@ SENDER = "min981201@gmail.com"
 RECEIVER = "min981201@gmail.com"  # 받을 이메일
 
 def send_email(subject: str, body: str):
-    msg = MIMEText(body, "plain", "utf-8")
+    body_html = body.replace("\n", "<br>")
+    msg = MIMEText(body_html, "html", "utf-8")
     msg["Subject"] = subject
     msg["From"] = SENDER
     msg["To"] = RECEIVER

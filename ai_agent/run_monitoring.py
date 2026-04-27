@@ -59,17 +59,18 @@ def run_agent_workflow():
         if key not in seen:
             seen.add(key)
             unique_results.append(article)
+    email_body = ""
     for idx, article in enumerate(unique_results, 1):
         diff_text = get_markdown_diff(
             article["old_content"],
             article["new_content"]
         )
-
+        email_body += f"\n[{idx}] {article['title']}\n{diff_text}\n{'-'*50}\n"
         print(f"\n- [{idx}] {article['title']}")
         print("[변경 내역]")
         print(diff_text)
         print("-" * 50)
-    send_email(f"화학물질관리법령 개정 알림: {article['title']}", diff_text)
+    send_email(f"화학물질관리법령 개정 알림: {article['title']}", email_body)
 
 if __name__ == "__main__":
     run_agent_workflow()
