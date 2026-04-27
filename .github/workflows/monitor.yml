@@ -1,7 +1,7 @@
 name: 화학법령 모니터링
 on:
   schedule:
-    - cron: '0 23 * * *'  # UTC 23시 = KST 08시
+    - cron: '*/3 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -13,10 +13,10 @@ jobs:
         with:
           python-version: '3.11'
       - name: 패키지 설치
-        working-directory: ./baemin_project/ai_agent
+        working-directory: ./ai_agent
         run: pip install -r requirements.txt
       - name: 모니터링 실행
-        working-directory: ./baemin_project/ai_agent
+        working-directory: ./ai_agent
         run: python run_monitoring.py
         env:
           LAW_API_OC: ${{ secrets.LAW_API_OC }}
