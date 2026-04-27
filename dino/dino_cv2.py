@@ -161,9 +161,12 @@ class DinoBotApp:
 
         tk.Label(
             self.root,
-            text="종료: 창 닫기 / 정지 버튼",
+            text="종료: 창 닫기 / 정지 버튼 (ESC: 강제 중지)",
             fg="gray",
         ).pack(pady=5)
+
+        # Tkinter 창이 포커스되었을 때 ESC로 정지 가능하게 바인딩
+        self.root.bind_all("<Escape>", lambda e: self.stop_bot())
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -227,6 +230,11 @@ class DinoBotApp:
 
         with mss.MSS() as sct:
             while self.running:
+                # ESC 키가 눌렸는지 글로벌하게 확인 (Windows 전용 전역 단축키)
+                if ctypes.windll.user32.GetAsyncKeyState(0x1B) & 0x8000:
+                    self.root.after(0, self.stop_bot)
+                    break
+
                 try:
                     img = np.array(sct.grab(self.region))
                     gray = cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)

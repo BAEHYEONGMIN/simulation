@@ -1,7 +1,7 @@
 name: 화학법령 모니터링
 on:
   schedule:
-    - cron: '* 23 * * * *'
+    - cron: '0 23 * * *'  # UTC 23시 = KST 08시
   workflow_dispatch:
 
 jobs:
