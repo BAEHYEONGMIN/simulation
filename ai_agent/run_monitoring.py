@@ -69,7 +69,7 @@ def run_agent_workflow():
         print("[변경 내역]")
         print(diff_text)
         print("-" * 50)
-        send_email(f"화학물질관리법령 개정 알림: {article['title']}", diff_text)
+    send_email(f"화학물질관리법령 개정 알림: {article['title']}", diff_text)
 
 if __name__ == "__main__":
     run_agent_workflow()

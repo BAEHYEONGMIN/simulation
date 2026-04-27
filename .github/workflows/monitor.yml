@@ -2,7 +2,7 @@ name: 화학법령 모니터링
 on:
   schedule:
     - cron: '0 23 * * *'  # UTC 23시 = KST 08시
-  workflow_dispatch:       # 수동 실행 버튼도 추가
+  workflow_dispatch:
 
 jobs:
   monitor:
@@ -12,8 +12,12 @@ jobs:
       - uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-      - run: pip install -r requirements.txt
-      - run: python run_monitoring.py
+      - name: 패키지 설치
+        working-directory: ./baemin_project/ai_agent
+        run: pip install -r requirements.txt
+      - name: 모니터링 실행
+        working-directory: ./baemin_project/ai_agent
+        run: python run_monitoring.py
         env:
           LAW_API_OC: ${{ secrets.LAW_API_OC }}
-          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
