@@ -1,7 +1,7 @@
 name: 화학법령 모니터링
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '* 23 * * * *'
   workflow_dispatch:
 
 jobs:
