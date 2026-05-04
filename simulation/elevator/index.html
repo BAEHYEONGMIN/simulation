@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>Elevator Simulation</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; gap: 30px; padding: 20px; background: #ececec; margin: 0; height: 100vh;}
+        
+        .building-container { display: flex; flex-direction: column; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); height: max-content; max-height: 95vh; overflow-y: auto;}
+        .building-title { margin-top: 0; margin-bottom: 15px; font-size: 18px; color: #333; border-bottom: 2px solid #ddd; padding-bottom: 10px;}
+        .building { display: flex; align-items: flex-end; position: relative; }
+        
+        .floors-label { display: flex; flex-direction: column-reverse; margin-right: 15px; }
+        .floor-name { height: 50px; width: 70px; display: flex; align-items: center; justify-content: flex-end; font-weight: bold; font-size: 14px; color: #555; border-bottom: 1px dashed transparent; box-sizing: border-box;}
+        
+        .shaft { width: 60px; border: 1px solid #ccc; border-bottom: 4px solid #555; position: relative; margin-right: 15px; background: #f4f4f4; display: flex; flex-direction: column-reverse; box-shadow: inset 0 0 10px rgba(0,0,0,0.05); border-radius: 2px 2px 0 0;}
+        .floor-mark { box-sizing: border-box; border-bottom: 1px dashed #ddd; height: 50px; display:flex; align-items:flex-end; padding-left: 2px; }
+        
+        .elevator { width: 54px; height: 48px; background: #3498db; position: absolute; bottom: 0; left: 2px; transition: bottom 0.2s linear, background-color 0.3s ease; display: flex; flex-direction: column; justify-content: center; align-items: center; color: white; font-weight: bold; border-radius: 4px; font-size: 12px; z-index: 10; box-shadow: 0 2px 5px rgba(0,0,0,0.3);}
+        .elevator.doors-open { background: #e67e22; }
+        .elevator.full { background: #c0392b !important; } /* 꽉 찼을 때 빨간색 */
+        
+        .panels-container { display: flex; flex-direction: column; gap: 15px; width: 350px;}
+        .controls { padding: 20px; border: 1px solid #ddd; background: #fff; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); display: flex; flex-direction: column;}
+        .controls h3 { margin-top: 0; border-bottom: 2px solid #3498db; padding-bottom: 10px;}
+        
+        .setting-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 14px;}
+        .setting-row input[type="range"] { flex-grow: 1; margin: 0 10px; }
+        .setting-val { width: 30px; text-align: right; font-weight: bold; color: #3498db;}
+        
+        button { padding: 10px; font-size: 14px; font-weight: bold; cursor: pointer; background: #2ecc71; color: white; border: none; border-radius: 4px; margin-bottom: 8px; width: 100%; transition: background 0.2s;}
+        button:hover { background: #27ae60; }
+        button.rush { background: #9b59b6; }
+        button.rush:hover { background: #8e44ad; }
+        button.restart { background: #e74c3c; margin-top: 10px;}
+        button.restart:hover { background: #c0392b; }
+        button.auto { background: #f39c12; }
+        button.auto.on { background: #d35400; box-shadow: inset 0 0 10px rgba(0,0,0,0.5); }
+        
+        .stats { background: #f8f9fa; padding: 15px; border-radius: 4px; border: 1px solid #e9ecef; margin-bottom: 10px; font-size: 14px;}
+        .stats p { margin: 5px 0; }
+        .stats strong { display: inline-block; width: 120px; }
+        
+        .log-box { flex-grow: 1; overflow-y: scroll; font-size: 12px; background:#1e1e1e; color: #d4d4d4; padding:10px; border-radius: 4px; font-family: 'Consolas', monospace; min-height: 200px;}
+        .log-box div { margin-bottom: 4px; border-bottom: 1px solid #333; padding-bottom: 2px;}
+        .log-tick { color: #569cd6; font-weight: bold; }
+        .log-spawn { color: #4ec9b0; }
+        .log-arrive { color: #ce9178; }
+        .log-action { color: #dcdcaa; }
+        .log-error { color: #f44336; }
+    </style>
+</head>
+<body>
+
+    <div class="building-container">
+        <h2 class="building-title">🏢 시뮬레이션 타워</h2>
+        <div class="building" id="building-view">
+            <!-- JS 렌더링 영역 -->
+        </div>
+    </div>
+    
+    <div class="panels-container">
+        <!-- 설정 패널 -->
+        <div class="controls">
+            <h3>⚙️ 환경 설정</h3>
+            <div class="setting-row">
+                <span>층 수</span>
+                <input type="range" id="inp-floors" min="5" max="30" value="15" oninput="document.getElementById('val-floors').innerText=this.value">
+                <span class="setting-val" id="val-floors">15</span>
+            </div>
+            <div class="setting-row">
+                <span>엘리베이터 수</span>
+                <input type="range" id="inp-elevators" min="1" max="8" value="4" oninput="document.getElementById('val-elevators').innerText=this.value">
+                <span class="setting-val" id="val-elevators">4</span>
+            </div>
+            <hr style="width:100%; border:0; border-top:1px dashed #ccc; margin:5px 0;">
+            <div class="setting-row">
+                <span>최대 정원</span>
+                <input type="range" id="inp-capacity" min="1" max="15" value="5" oninput="document.getElementById('val-capacity').innerText=this.value">
+                <span class="setting-val" id="val-capacity">5</span>
+            </div>
+            <div class="setting-row">
+                <span>1틱당 시간 (ms)</span>
+                <input type="range" id="inp-speed" min="50" max="1000" step="50" value="500" oninput="document.getElementById('val-speed').innerText=this.value">
+                <span class="setting-val" id="val-speed">500</span>
+            </div>
+            <button class="restart" onclick="restartSimulation()">🔄 이 설정으로 처음부터 재시작</button>
+        </div>
+
+        <!-- 조작 패널 -->
+        <div class="controls" style="flex-grow: 1;">
+            <h3>🎛️ 중앙 통제실</h3>
+            
+            <button id="btn-auto" class="auto" onclick="toggleAutoMode()">🤖 Auto 모드 (자동 스폰): OFF</button>
+            <button onclick="spawnPassenger()">👤 무작위 승객 발생 (랜덤 층)</button>
+            <button class="rush" onclick="spawnRushHour()">🏢 출근 시간 발생 (1층 쏟아짐)</button>
+            
+            <div class="stats">
+                <p><strong>⏱️ 현재 틱 (Tick):</strong> <span id="clock-display">0</span></p>
+                <p><strong>🧍 대기 중 승객:</strong> <span id="waiting-display" style="color:#e74c3c; font-weight:bold;">0</span>명</p>
+                <p><strong>✅ 수송 완료:</strong> <span id="completed-display" style="color:#27ae60; font-weight:bold;">0</span>명</p>
+                <p><strong>📈 평균 대기 시간:</strong> <span id="avg-wait-display">0</span> 틱</p>
+            </div>
+            
+            <h4 style="margin-bottom: 5px; margin-top: 0;">📜 실시간 로그</h4>
+            <div id="log-display" class="log-box"></div>
+        </div>
+    </div>
+
+<script>
+    // --- 1. 글로벌 상태 및 변수 ---
+    let TOTAL_FLOORS = 15;
+    let TOTAL_ELEVATORS = 4;
+    let FLOOR_HEIGHT = 50; 
+    let TICK_MS = 500;     
+    let MAX_CAPACITY = 5;  
+    
+    let building = null;
+    let simulationInterval = null;
+    let isAutoMode = false;
+
+    // --- 2. 클래스 설계 ---
+    class Passenger {
+        constructor(id, from, to, spawnTick) {
+            this.id = id;
+            this.from = from;
+            this.to = to;
+            this.spawnTick = spawnTick;
+            this.endTick = -1;
+            this.status = "WAITING"; 
+            this.assignedElevatorId = null; // [수정] 배정된 엘리베이터 기억
+        }
+    }
+
+    class Elevator {
+        constructor(id) {
+            this.id = id;
+            this.floor = 1;
+            this.direction = "IDLE"; 
+            this.passengers = [];
+            this.targetFloors = new Set(); 
+            this.state = "MOVING"; // MOVING, DOORS_OPEN
+            this.doorsTimer = 0;
+        }
+
+        addTarget(floor) {
+            this.targetFloors.add(floor);
+            this.updateDirection();
+        }
+
+        updateDirection() {
+            if (this.targetFloors.size === 0) {
+                this.direction = "IDLE";
+                return;
+            }
+            
+            let hasUp = false;
+            let hasDown = false;
+            for (let t of this.targetFloors) {
+                if (t > this.floor) hasUp = true;
+                if (t < this.floor) hasDown = true;
+            }
+
+            if (this.direction === "UP" && !hasUp) {
+                this.direction = hasDown ? "DOWN" : "IDLE";
+            } else if (this.direction === "DOWN" && !hasDown) {
+                this.direction = hasUp ? "UP" : "IDLE";
+            } else if (this.direction === "IDLE") {
+                if (hasUp) this.direction = "UP";
+                else if (hasDown) this.direction = "DOWN";
+            }
+        }
+    }
+
+    class Building {
+        constructor() {
+            this.elevators = Array.from({length: TOTAL_ELEVATORS}, (_, i) => new Elevator(i+1));
+            this.waitingPassengers = [];
+            this.completedPassengers = [];
+            this.clock = 0;
+            this.passengerCount = 0;
+        }
+
+        spawnPassenger(from, to) {
+            this.passengerCount++;
+            const p = new Passenger(this.passengerCount, from, to, this.clock);
+            this.waitingPassengers.push(p);
+            
+            addLog(`<span class="log-spawn">[승객 ${p.id}] ${from}층 -> ${to}층 호출</span>`);
+            this.assignElevator(p);
+            updateUIStats();
+        }
+
+        assignElevator(passenger) {
+            let bestElevator = null;
+            let minScore = 9999;
+
+            for (let e of this.elevators) {
+                let distance = Math.abs(e.floor - passenger.from);
+                let score = distance;
+                
+                if (e.passengers.length >= MAX_CAPACITY) {
+                    score += 1000; // 꽉 찬 엘리베이터는 무조건 후순위
+                } else if (e.direction === "IDLE") {
+                    score -= 100; // [우선순위 1] 가장 가까운 쉬고 있는 엘리베이터
+                } else if (e.direction === "UP" && passenger.from > e.floor) {
+                    score -= 50;  // [우선순위 2] 나를 향해 다가오고 있는 엘리베이터
+                } else if (e.direction === "DOWN" && passenger.from < e.floor) {
+                    score -= 50;  
+                } else {
+                    score += 100; // 나와 반대로 가는 중이면 후순위
+                }
+
+                if (score < minScore) {
+                    minScore = score;
+                    bestElevator = e;
+                }
+            }
+            
+            if (bestElevator) {
+                bestElevator.addTarget(passenger.from);
+                passenger.assignedElevatorId = bestElevator.id; 
+            }
+        }
+
+        tick() {
+            this.clock++;
+            
+            this.elevators.forEach(e => {
+                // 문이 열려있는 상태
+                if (e.state === "DOORS_OPEN") {
+                    e.doorsTimer--;
+                    if (e.doorsTimer <= 0) {
+                        e.state = "MOVING";
+                        e.updateDirection();
+                        updateElevatorUI(e);
+                    }
+                    return; 
+                }
+
+                if (e.targetFloors.size > 0) {
+                    if (e.targetFloors.has(e.floor)) {
+                        e.targetFloors.delete(e.floor);
+                        e.state = "DOORS_OPEN";
+                        e.doorsTimer = 2; // 문 열림 2틱 유지
+                        
+                        addLog(`<span class="log-arrive">E${e.id} [${e.floor}층] 도착 (문열림)</span>`);
+                        
+                        // 하차 로직
+                        let toRemove = [];
+                        e.passengers.forEach((p, idx) => {
+                            if (p.to === e.floor) {
+                                p.status = "COMPLETED";
+                                p.endTick = this.clock;
+                                this.completedPassengers.push(p);
+                                toRemove.push(idx);
+                                addLog(`<span class="log-action">  ↳ [승객 ${p.id}] 하차. (총 소요시간: ${p.endTick - p.spawnTick}틱)</span>`);
+                            }
+                        });
+                        for (let i = toRemove.length - 1; i >= 0; i--) {
+                            e.passengers.splice(toRemove[i], 1);
+                        }
+
+                        // 승차 로직
+                        let toBoard = [];
+                        this.waitingPassengers.forEach((p, idx) => {
+                            if (p.from === e.floor) {
+                                if (e.passengers.length >= MAX_CAPACITY) {
+                                    addLog(`<span class="log-error">  ↳ [승객 ${p.id}] 탑승 실패 (E${e.id} 만원)</span>`);
+                                    p.assignedElevatorId = null; // 배정 해제
+                                    return; 
+                                }
+
+                                if (e.direction === "IDLE") {
+                                    e.direction = p.to > e.floor ? "UP" : "DOWN";
+                                }
+                                
+                                p.status = "BOARDED";
+                                e.passengers.push(p);
+                                e.addTarget(p.to);
+                                toBoard.push(idx);
+                                addLog(`<span class="log-action">  ↳ [승객 ${p.id}] 탑승. (목적지: ${p.to}층)</span>`);
+                            }
+                        });
+                        for (let i = toBoard.length - 1; i >= 0; i--) {
+                            this.waitingPassengers.splice(toBoard[i], 1);
+                        }
+                        
+                        e.updateDirection();
+                        updateElevatorUI(e);
+                        return; 
+                    }
+
+                    // 이동 로직
+                    if (e.direction === "UP") e.floor = Math.min(e.floor + 1, TOTAL_FLOORS);
+                    else if (e.direction === "DOWN") e.floor = Math.max(e.floor - 1, 1);
+                    
+                    updateElevatorUI(e);
+                }
+            });
+
+            // [스마트 분배 로직] 고립된 대기 승객 구조 로직 개선
+            this.waitingPassengers.forEach(p => {
+                let assignedElevator = this.elevators.find(e => e.id === p.assignedElevatorId);
+                let someoneComing = assignedElevator && assignedElevator.targetFloors.has(p.from);
+                
+                if (!someoneComing) {
+                    p.assignedElevatorId = null;
+                    this.assignElevator(p);
+                }
+            });
+
+            updateUIStats();
+            
+            // Auto 모드 실행
+            if (isAutoMode) runAutoLogic();
+        }
+    }
+
+    // --- 3. DOM / UI 제어 로직 ---
+    function initUI() {
+        const view = document.getElementById('building-view');
+        view.innerHTML = ""; // 렌더링 영역 비우기
+        
+        // CSS Transition 속도 동기화 (TICK_MS에 맞춰서 부드럽게)
+        let transitionSpeed = (TICK_MS / 1000) * 0.8; // 틱보다 살짝 빠르게
+        
+        const floorsDiv = document.createElement('div');
+        floorsDiv.className = 'floors-label';
+        for(let i=1; i<=TOTAL_FLOORS; i++){
+            const f = document.createElement('div');
+            f.className = 'floor-name';
+            f.innerHTML = `<span id="wait-f${i}" style="margin-right:10px; color:#e74c3c; font-weight:normal; font-size:12px;"></span> ${i}F`;
+            floorsDiv.appendChild(f);
+        }
+        view.appendChild(floorsDiv);
+
+        building.elevators.forEach(e => {
+            const shaft = document.createElement('div');
+            shaft.className = 'shaft';
+            shaft.style.height = `${TOTAL_FLOORS * FLOOR_HEIGHT}px`;
+            
+            for(let i=1; i<=TOTAL_FLOORS; i++){
+                const mark = document.createElement('div');
+                mark.className = 'floor-mark';
+                shaft.appendChild(mark);
+            }
+
+            const elDiv = document.createElement('div');
+            elDiv.className = 'elevator';
+            elDiv.id = `el-${e.id}`;
+            elDiv.style.transition = `bottom ${transitionSpeed}s linear, background-color 0.3s ease`;
+            elDiv.innerHTML = `E${e.id}<br><span id="pcount-${e.id}" style="font-weight:normal;">0명</span>`;
+            
+            shaft.appendChild(elDiv);
+            view.appendChild(shaft);
+        });
+    }
+
+    function updateElevatorUI(e) {
+        const elDiv = document.getElementById(`el-${e.id}`);
+        const bottomPos = (e.floor - 1) * FLOOR_HEIGHT;
+        elDiv.style.bottom = `${bottomPos}px`;
+        
+        document.getElementById(`pcount-${e.id}`).innerText = `${e.passengers.length}명`;
+        
+        if (e.passengers.length >= MAX_CAPACITY) elDiv.classList.add('full');
+        else elDiv.classList.remove('full');
+
+        if (e.state === "DOORS_OPEN") elDiv.classList.add('doors-open');
+        else elDiv.classList.remove('doors-open');
+    }
+
+    function updateUIStats() {
+        document.getElementById('clock-display').innerText = building.clock;
+        document.getElementById('waiting-display').innerText = building.waitingPassengers.length;
+        document.getElementById('completed-display').innerText = building.completedPassengers.length;
+        
+        if (building.completedPassengers.length > 0) {
+            const totalWait = building.completedPassengers.reduce((sum, p) => sum + (p.endTick - p.spawnTick), 0);
+            const avg = (totalWait / building.completedPassengers.length).toFixed(1);
+            document.getElementById('avg-wait-display').innerText = avg;
+        }
+
+        // 각 층별 대기 인원 좌측 표기
+        let waitCounts = new Array(TOTAL_FLOORS + 1).fill(0);
+        building.waitingPassengers.forEach(p => {
+            waitCounts[p.from]++;
+        });
+        for (let i = 1; i <= TOTAL_FLOORS; i++) {
+            let el = document.getElementById(`wait-f${i}`);
+            if (el) {
+                if (waitCounts[i] > 0) el.innerText = `🧍${waitCounts[i]}`;
+                else el.innerText = "";
+            }
+        }
+    }
+
+    function addLog(msg) {
+        const logDiv = document.getElementById('log-display');
+        logDiv.innerHTML += `<div><span class="log-tick">[${building.clock}T]</span> ${msg}</div>`;
+        logDiv.scrollTop = logDiv.scrollHeight; 
+    }
+
+    // --- 4. 사용자 인터랙션 & 제어 ---
+    function spawnPassenger() {
+        let from = Math.floor(Math.random() * TOTAL_FLOORS) + 1;
+        let to = 1; 
+        if (from === 1) {
+            to = Math.floor(Math.random() * (TOTAL_FLOORS - 1)) + 2;
+        }
+        building.spawnPassenger(from, to);
+    }
+
+    function spawnRushHour() {
+        // 출근시간: 1층 -> 랜덤층 3명 무더기 발생 (부담을 줄이기 위해 3명으로 세팅)
+        for(let i=0; i<3; i++){
+            let to = Math.floor(Math.random() * (TOTAL_FLOORS - 1)) + 2; 
+            building.spawnPassenger(1, to);
+        }
+    }
+
+    // [Auto 모드 로직]
+    function toggleAutoMode() {
+        isAutoMode = !isAutoMode;
+        const btn = document.getElementById('btn-auto');
+        if (isAutoMode) {
+            btn.innerText = "🤖 Auto 모드: ON";
+            btn.classList.add('on');
+            addLog(`<span style="color:#f39c12">*** 자동 스폰 모드가 켜졌습니다. ***</span>`);
+        } else {
+            btn.innerText = "🤖 Auto 모드: OFF";
+            btn.classList.remove('on');
+            addLog(`<span style="color:#f39c12">*** 자동 스폰 모드가 꺼졌습니다. ***</span>`);
+        }
+    }
+
+    function runAutoLogic() {
+        // 매 틱(Tick)마다 확률적으로 승객 발생 (속도에 관계없이 틱 기반)
+        const rand = Math.random();
+        if (rand < 0.15) { // 15% 확률로 일반 승객 발생
+            spawnPassenger();
+        } else if (rand < 0.17) { // 2% 확률로 출근 무더기 스폰
+            spawnRushHour();
+        }
+    }
+
+    // [실시간 설정 변경 리스너]
+    document.getElementById('inp-capacity').addEventListener('input', (e) => { MAX_CAPACITY = parseInt(e.target.value); });
+    document.getElementById('inp-speed').addEventListener('change', (e) => { 
+        TICK_MS = parseInt(e.target.value); 
+        // 속도가 바뀌면 Interval만 덮어씌움 (시뮬레이션은 유지)
+        clearInterval(simulationInterval);
+        startLoop();
+        
+        // CSS Transition 속도 즉시 갱신
+        let transitionSpeed = (TICK_MS / 1000) * 0.8;
+        building.elevators.forEach(el => {
+            document.getElementById(`el-${el.id}`).style.transition = `bottom ${transitionSpeed}s linear, background-color 0.3s ease`;
+        });
+        addLog(`<span style="color:#f39c12">*** 시뮬레이션 속도 ${TICK_MS}ms 로 변경됨 ***</span>`);
+    });
+
+    // [전체 초기화 및 재시작]
+    function restartSimulation() {
+        if(simulationInterval) clearInterval(simulationInterval);
+        
+        TOTAL_FLOORS = parseInt(document.getElementById('inp-floors').value);
+        TOTAL_ELEVATORS = parseInt(document.getElementById('inp-elevators').value);
+        MAX_CAPACITY = parseInt(document.getElementById('inp-capacity').value);
+        TICK_MS = parseInt(document.getElementById('inp-speed').value);
+        
+        document.getElementById('log-display').innerHTML = "";
+        
+        building = new Building();
+        initUI();
+        startLoop();
+    }
+
+    function startLoop() {
+        simulationInterval = setInterval(() => building.tick(), TICK_MS);
+    }
+
+    // --- 5. 프로그램 최초 시작 ---
+    restartSimulation();
+
+</script>
+</body>
+</html>
