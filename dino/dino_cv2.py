@@ -112,6 +112,9 @@ class DinoBotApp:
         self.region_var = tk.StringVar(value="감지 영역: 미설정")
 
         self.build_ui()
+        
+        # 전역 단축키 감시 스레드 시작 (Windows 전용)
+        self.start_global_listener()
 
     def build_ui(self):
         tk.Label(
@@ -161,14 +164,35 @@ class DinoBotApp:
 
         tk.Label(
             self.root,
-            text="종료: 창 닫기 / 정지 버튼 (ESC: 강제 중지)",
+            text="ESC: 봇 정지 / Shift+ESC: 전체 종료",
             fg="gray",
         ).pack(pady=5)
 
-        # Tkinter 창이 포커스되었을 때 ESC로 정지 가능하게 바인딩
-        self.root.bind_all("<Escape>", lambda e: self.stop_bot())
-
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def start_global_listener(self):
+        """백그라운드에서 전역 단축키를 감시하는 스레드 실행"""
+        thread = threading.Thread(target=self._global_key_monitor, daemon=True)
+        thread.start()
+
+    def _global_key_monitor(self):
+        """프로그램이 켜져 있는 동안 전역 키 입력을 감시"""
+        while True:
+            try:
+                # Shift (0x10) + ESC (0x1B) 체크
+                shift_down = ctypes.windll.user32.GetAsyncKeyState(0x10) & 0x8000
+                esc_down = ctypes.windll.user32.GetAsyncKeyState(0x1B) & 0x8000
+
+                if shift_down and esc_down:
+                    self.root.after(0, self.on_close)
+                    break
+                elif esc_down:
+                    if self.running:
+                        self.root.after(0, self.stop_bot)
+                
+                time.sleep(0.1)  # CPU 점유율 방지
+            except Exception:
+                break
 
     def select_region(self):
         self.stop_bot()

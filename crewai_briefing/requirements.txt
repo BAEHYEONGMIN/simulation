@@ -1,5 +1,7 @@
 crewai
 langchain-community
 langchain-google-genai
-tavily-python
+requests
+feedparser
 python-dotenv
+

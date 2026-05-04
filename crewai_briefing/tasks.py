@@ -2,68 +2,63 @@ from crewai import Task
 import datetime
 
 class BriefingTasks:
-    def research_it_trends(self, agent):
+    def analyze_stories(self, agent, hn_data: str, rss_data: str):
         today = datetime.datetime.now().strftime("%Y년 %m월 %d일")
         return Task(
-            description=f"""오늘({today}) 기준 가장 뜨거운 IT/AI 뉴스를 심층 조사하세요.
+            description=f"""아래는 오늘({today}) 두 가지 소스에서 수집한 IT/AI 관련 최신 기사 목록입니다.
 
-[조사 방법 - 반드시 아래 순서대로 검색 도구를 여러 번 호출하세요]
+[소스 A] Hacker News - 개발자 커뮤니티에서 오늘 가장 많이 반응한 기사
+{hn_data}
 
-1차 검색: "AI LLM model news {today}"
-2차 검색: "tech industry major announcements {today}"
-3차 검색: "IT 기술 뉴스 {today}"
-4차 검색: "most discussed AI developer news this week"
+[소스 B] 테크 미디어 RSS (VentureBeat AI, TechCrunch AI) - 오늘 발행된 업계 주요 뉴스
+{rss_data}
 
-[각 뉴스 항목에 대해 반드시 수집해야 할 정보]
-- 무슨 일이 일어났는가? (구체적인 사건/발표 내용)
-- 언제, 누가, 어떤 수치/스펙과 함께 발표했는가?
-- 기존 대비 무엇이 달라졌는가? (이전 버전, 경쟁사 대비)
-- 이 뉴스가 업계에 미치는 파급력은?
-- 출처 URL
+두 소스를 종합하여 오늘 가장 중요하고 의미있는 기사 4~5개를 선별하고 분석하세요.
 
-[필수 규칙]
-- 반드시 검색 도구를 최소 3번 이상 호출하세요.
-- 검색 결과에 없는 내용은 절대 추가하지 마세요.
-- 각 항목당 최소 5문장 이상의 상세 내용을 수집하세요.
-- 출처 URL은 반드시 포함하세요.""",
-            expected_output="""3~5개의 주요 IT/AI 뉴스 항목. 
-            각 항목마다 구체적 수치/날짜/발표자, 배경 맥락, 업계 파급력, 출처 URL 포함. (한국어)""",
+[선별 기준 - 우선순위 높은 것]
+- 신규 AI 모델 출시 또는 주요 성능 발표
+- 주요 기업의 인수합병(M&A) 또는 전략적 파트너십
+- 개발자에게 실질적 영향을 주는 플랫폼/도구 변화
+- 업계 판도를 바꿀 수 있는 정책/투자 뉴스
+- 오픈소스 주요 프로젝트 출시
+
+[각 선별 기사에 대해 작성할 내용]
+- 제목, 출처(HN 또는 RSS 미디어명), URL
+- 커뮤니티 반응 (HN 기사의 경우 점수/댓글 수)
+- 이 기사가 왜 중요한지 (2~3문장)""",
+            expected_output="선별된 4~5개 기사의 제목, 출처, URL, 중요성 설명이 포함된 분석 리포트 (한국어)",
             agent=agent
         )
 
     def write_morning_briefing(self, agent):
         today = datetime.datetime.now().strftime("%Y년 %m월 %d일")
         return Task(
-            description=f"""리서처가 수집한 원문 데이터를 바탕으로 전문 테크 보고서를 HTML로 작성하세요.
+            description=f"""분석가가 선별한 기사 목록을 바탕으로 아침 브리핑 보고서를 HTML로 작성하세요.
 
-[작성 기준]
-- 리서처가 제공한 내용과 URL 외에 절대 내용을 추가하거나 추측하지 마세요.
-- 각 항목은 제목만 나열하는 수준이 아니라, 읽는 사람이 해당 기사를 직접 읽지 않아도 
-  전체 내용을 파악할 수 있을 만큼 충분히 상세하게 작성하세요.
+[필수 규칙]
+- 분석가가 제공한 내용 외에 절대 추가하거나 추측하지 마세요.
 - 마크다운(#, **, -, ---) 절대 사용 금지. 오직 HTML 태그만 사용하세요.
+- 모든 URL은 <a href="URL" target="_blank">링크</a> 형태로 삽입하세요.
 
-[출력 HTML 포맷 - 반드시 이 구조를 따르세요]
-
+[출력 HTML 포맷]
 <h2>🌅 {today} 모닝 테크 브리핑</h2>
+<p style="color:#888; font-size:13px;">출처: Hacker News + VentureBeat AI + TechCrunch AI</p>
 <hr>
 
-<h3>📰 주요 IT & AI 소식</h3>
+<h3>📰 오늘의 주요 IT & AI 소식</h3>
 
-<!-- 각 뉴스 항목마다 아래 구조 반복 -->
-<h4>[순번]. [뉴스 제목]</h4>
+<!-- 각 기사마다 반복 -->
+<h4>[번호]. [기사 제목]</h4>
+<p style="color:#888; font-size:12px;">출처: [미디어명] | <a href="[URL]" target="_blank">원문 보기</a></p>
 
-<p><b>📌 무슨 일이?</b><br>
-[구체적으로 무슨 발표/사건이 있었는지. 날짜, 발표 주체, 핵심 수치 포함. 3~5문장]</p>
+<p><b>📌 핵심 내용</b><br>
+[기사의 핵심 내용. 3~4문장]</p>
 
-<p><b>🔍 배경 & 맥락</b><br>
-[이 뉴스가 나오게 된 배경, 이전 버전 또는 경쟁사 대비 무엇이 달라졌는지. 2~3문장]</p>
+<p><b>💡 왜 주목해야 하나?</b><br>
+[개발자/업계에 미치는 영향. 2~3문장]</p>
 
-<p><b>💡 왜 중요한가?</b><br>
-[이 소식이 개발자/업계에 미치는 실질적인 영향과 시사점. 2~3문장]</p>
-
-<p>🔗 출처: <a href="[URL]">[URL]</a></p>
+<p style="color:#666; font-size:12px;">💬 HN 커뮤니티 반응: [점수]pts / [댓글]개 (HN 기사인 경우만 표시)</p>
 <hr>""",
-            expected_output="""Gmail에서 바로 렌더링 가능한 HTML 형식의 상세 테크 보고서.
-            마크다운 기호 없음. 항목당 무슨 일, 배경 맥락, 왜 중요한지 섹션 포함. 출처 링크 포함.""",
+            expected_output="Gmail에서 바로 렌더링 가능한 HTML 형식의 아침 보고서. 마크다운 없음. 출처와 링크 포함.",
             agent=agent
         )

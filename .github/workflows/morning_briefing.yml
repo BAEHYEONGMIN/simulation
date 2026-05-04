@@ -1,0 +1,28 @@
+name: 모닝 테크 브리핑
+
+on:
+  schedule:
+    - cron: '0 23 * * 0-4'  # UTC 일~목 23시 = KST 월~금 08시
+  workflow_dispatch:          # 수동 실행 (테스트용)
+
+jobs:
+  briefing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: 패키지 설치
+        working-directory: ./crewai_briefing
+        run: pip install -r requirements.txt
+
+      - name: 모닝 브리핑 실행
+        working-directory: ./crewai_briefing
+        run: python main.py
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL_NAME: ${{ secrets.GEMINI_MODEL_NAME }}
+          GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
