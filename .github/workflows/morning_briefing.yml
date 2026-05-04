@@ -15,6 +15,14 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: pip 캐시 복원
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('crewai_briefing/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: 패키지 설치
         working-directory: ./crewai_briefing
         run: pip install -r requirements.txt
