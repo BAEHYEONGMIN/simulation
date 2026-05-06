@@ -33,6 +33,7 @@
             display: flex;
             flex-direction: column;
             box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+            min-width: 0; /* ✅ 무한 가로 팽창 버그 해결의 핵심 (Flex child) */
         }
 
         #chart {
@@ -52,6 +53,7 @@
             min-width: 350px;
             overflow-y: auto;
             padding-right: 10px;
+            min-width: 0; /* 패널 영역도 무한 팽창 방지 */
         }
 
         .panel {
@@ -181,6 +183,27 @@
             margin-bottom: 4px;
             border-bottom: 1px solid #333;
             padding-bottom: 2px;
+        }
+
+        /* ✅ 모바일 반응형 레이아웃 추가 */
+        @media (max-width: 800px) {
+            body {
+                flex-direction: column;
+                height: auto;
+                padding: 10px;
+            }
+            .chart-container {
+                min-height: 400px;
+                padding: 10px;
+            }
+            #chart {
+                min-height: 350px;
+            }
+            .panel-container {
+                min-width: 100%;
+                overflow-y: visible;
+                padding-right: 0;
+            }
         }
     </style>
 </head>
