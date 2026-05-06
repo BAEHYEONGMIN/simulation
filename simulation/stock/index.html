@@ -1,54 +1,190 @@
 <!DOCTYPE html>
 <html lang="ko">
+
 <head>
     <meta charset="UTF-8">
     <title>주식 테크니컬 트레이딩 시뮬레이터 (Pro)</title>
-    
-    <!-- 1. TradingView Lightweight Charts -->
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
-    <!-- 2. PapaParse for CSV parsing -->
+
+    <!-- lightweight-charts v4 고정 (v5는 API가 완전히 달라서 사용 불가) -->
+    <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
-    <!-- 3. Technical Indicators (SMA, BB, etc) -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/technicalindicators/3.1.0/browser.js"></script>
+    <!-- technicalindicators: regeneratorRuntime 필요 없는 CDN 버전 -->
+    <script src="https://cdn.jsdelivr.net/npm/regenerator-runtime@0.14.1/runtime.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/technicalindicators@3.1.0/dist/browser.js"></script>
 
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #121212; color: #e0e0e0; margin: 0; padding: 20px; display: flex; gap: 20px; height: 100vh; box-sizing: border-box; }
-        
-        /* 왼쪽: 차트 영역 */
-        .chart-container { flex: 2; background: #1e1e1e; border-radius: 8px; padding: 20px; display: flex; flex-direction: column; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
-        #chart { flex-grow: 1; width: 100%; border: 1px solid #333; border-radius: 4px; overflow: hidden; }
-        
-        /* 오른쪽: 컨트롤 패널 영역 */
-        .panel-container { flex: 1; display: flex; flex-direction: column; gap: 20px; min-width: 350px; overflow-y:auto; padding-right:10px; }
-        .panel { background: #1e1e1e; padding: 20px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
-        .panel h2, .panel h3 { margin-top: 0; color: #fff; border-bottom: 1px solid #333; padding-bottom: 10px; }
-        
-        /* 파일 업로드 */
-        .upload-box { background: #2c3e50; padding: 15px; border-radius: 4px; text-align: center; border: 2px dashed #34495e; margin-bottom: 10px;}
-        input[type="file"] { display: none; }
-        .upload-label { cursor: pointer; color: #3498db; font-weight: bold; }
-        .upload-label:hover { color: #2980b9; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #121212;
+            color: #e0e0e0;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            gap: 20px;
+            height: 100vh;
+            box-sizing: border-box;
+        }
 
-        /* 자산 정보 */
-        .status-row { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 16px; }
-        .status-row.highlight { font-size: 24px; font-weight: bold; color: #4CAF50; margin-bottom: 20px; }
-        .status-row.price { font-size: 28px; font-weight: bold; color: #f1c40f; }
-        
-        /* 주문 UI */
-        .trade-slider-box { margin: 20px 0; }
-        input[type="range"] { width: 100%; margin: 10px 0; cursor: pointer; }
-        .btn-group { display: flex; gap: 10px; }
-        button { flex: 1; padding: 15px; font-size: 16px; font-weight: bold; border: none; border-radius: 4px; cursor: pointer; transition: opacity 0.2s; color: white; }
-        button:hover { opacity: 0.8; }
-        .btn-buy { background: #e74c3c; } 
-        .btn-sell { background: #3498db; } 
-        .btn-next { background: #9b59b6; margin-top: 10px; padding: 20px; font-size: 18px; width: 100%; box-shadow: 0 4px 6px rgba(0,0,0,0.3);}
-        .btn-next:active { transform: translateY(2px); }
-        
-        .log-box { flex-grow: 1; font-family: monospace; font-size: 12px; background: #181818; padding: 10px; border-radius: 4px; overflow-y: auto; max-height: 200px; color: #aaa; margin-top:10px; }
-        .log-box div { margin-bottom: 4px; border-bottom: 1px solid #333; padding-bottom: 2px;}
+        .chart-container {
+            flex: 2;
+            background: #1e1e1e;
+            border-radius: 8px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+        }
+
+        #chart {
+            flex-grow: 1;
+            width: 100%;
+            min-height: 500px;
+            border: 1px solid #333;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .panel-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            min-width: 350px;
+            overflow-y: auto;
+            padding-right: 10px;
+        }
+
+        .panel {
+            background: #1e1e1e;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+        }
+
+        .panel h2,
+        .panel h3 {
+            margin-top: 0;
+            color: #fff;
+            border-bottom: 1px solid #333;
+            padding-bottom: 10px;
+        }
+
+        .upload-box {
+            background: #2c3e50;
+            padding: 15px;
+            border-radius: 4px;
+            text-align: center;
+            border: 2px dashed #34495e;
+            margin-bottom: 10px;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .upload-label {
+            cursor: pointer;
+            color: #3498db;
+            font-weight: bold;
+        }
+
+        .upload-label:hover {
+            color: #2980b9;
+        }
+
+        .status-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+
+        .status-row.highlight {
+            font-size: 24px;
+            font-weight: bold;
+            color: #4CAF50;
+            margin-bottom: 20px;
+        }
+
+        .status-row.price {
+            font-size: 28px;
+            font-weight: bold;
+            color: #f1c40f;
+        }
+
+        .trade-slider-box {
+            margin: 20px 0;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            margin: 10px 0;
+            cursor: pointer;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 10px;
+        }
+
+        button {
+            flex: 1;
+            padding: 15px;
+            font-size: 16px;
+            font-weight: bold;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+            color: white;
+        }
+
+        button:hover {
+            opacity: 0.8;
+        }
+
+        .btn-buy {
+            background: #e74c3c;
+        }
+
+        .btn-sell {
+            background: #3498db;
+        }
+
+        .btn-next {
+            background: #9b59b6;
+            margin-top: 10px;
+            padding: 20px;
+            font-size: 18px;
+            width: 100%;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        .btn-next:active {
+            transform: translateY(2px);
+        }
+
+        .log-box {
+            flex-grow: 1;
+            font-family: monospace;
+            font-size: 12px;
+            background: #181818;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-y: auto;
+            max-height: 200px;
+            color: #aaa;
+            margin-top: 10px;
+        }
+
+        .log-box div {
+            margin-bottom: 4px;
+            border-bottom: 1px solid #333;
+            padding-bottom: 2px;
+        }
     </style>
 </head>
+
 <body>
 
     <div class="chart-container">
@@ -60,7 +196,6 @@
     </div>
 
     <div class="panel-container">
-        <!-- 1. 데이터 업로드 영역 -->
         <div class="panel">
             <h3>📁 데이터 불러오기</h3>
             <div class="upload-box">
@@ -68,9 +203,9 @@
                 <label for="csv-upload" class="upload-label">클릭하여 OHLCV CSV 파일 업로드</label>
                 <div id="file-name" style="margin-top:10px; font-size:13px; color:#aaa;">(현재 가상 데이터 실행 중)</div>
             </div>
+            <div id="parse-debug" style="font-size:11px; color:#e67e22; margin-top:5px;"></div>
         </div>
 
-        <!-- 2. 자산 현황 영역 -->
         <div class="panel">
             <h3>💰 자산 현황</h3>
             <div class="status-row price">
@@ -95,7 +230,6 @@
             </div>
         </div>
 
-        <!-- 3. 주문 영역 -->
         <div class="panel">
             <h3>⚖️ 주문 (Trading)</h3>
             <div class="trade-slider-box">
@@ -105,7 +239,8 @@
                 </div>
                 <input type="range" id="trade-slider" min="0" max="100" value="0" step="1">
                 <div style="font-size:13px; color:#aaa; margin-top:5px;">
-                    예상: <span style="color:#e74c3c;">매수 <span id="est-buy">0</span>주</span> / <span style="color:#3498db;">매도 <span id="est-sell">0</span>주</span>
+                    예상: <span style="color:#e74c3c;">매수 <span id="est-buy">0</span>주</span> / <span
+                        style="color:#3498db;">매도 <span id="est-sell">0</span>주</span>
                 </div>
             </div>
             <div class="btn-group">
@@ -114,7 +249,6 @@
             </div>
         </div>
 
-        <!-- 4. 다음 턴 -->
         <div class="panel" style="flex-grow:1; display:flex; flex-direction:column;">
             <button class="btn-next" onclick="nextTurn()">⏳ 10~30일 무작위 건너뛰기</button>
             <h4 style="margin: 15px 0 5px 0; border-bottom: 1px solid #333; padding-bottom: 5px;">📜 거래 기록</h4>
@@ -122,240 +256,264 @@
         </div>
     </div>
 
-<script>
-    // --- 1. State ---
-    const INITIAL_CASH = 10000000;
-    let cash = INITIAL_CASH;
-    let shares = 0;
-    let currentPrice = 0;
-    
-    let globalData = [];   // 파싱된 전체 데이터 배열
-    let currentIndex = 0;  // 현재 시뮬레이션 시점의 인덱스
-    let timeTick = 0;
+    <script>
+        // --- 1. State ---
+        const INITIAL_CASH = 10000000;
+        let cash = INITIAL_CASH;
+        let shares = 0;
+        let currentPrice = 0;
 
-    // --- 2. DOM Elements ---
-    const uiPrice = document.getElementById('ui-price');
-    const uiTotalAsset = document.getElementById('ui-totalAsset');
-    const uiCash = document.getElementById('ui-cash');
-    const uiShares = document.getElementById('ui-shares');
-    const uiRoi = document.getElementById('ui-roi');
-    
-    const slider = document.getElementById('trade-slider');
-    const sliderVal = document.getElementById('ui-slider-val');
-    const estBuy = document.getElementById('est-buy');
-    const estSell = document.getElementById('est-sell');
-    const logBox = document.getElementById('trade-log');
+        let globalData = [];
+        let currentIndex = 0;
+        let timeTick = 0;
 
-    // --- 3. TradingView Chart Setup ---
-    const chart = LightweightCharts.createChart(document.getElementById('chart'), {
-        layout: { textColor: '#d1d4dc', background: { type: 'solid', color: '#1e1e1e' } },
-        grid: { vertLines: { color: '#333' }, horzLines: { color: '#333' } },
-        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-        timeScale: { timeVisible: true, borderColor: '#333' },
-        rightPriceScale: { borderColor: '#333' }
-    });
+        // --- 2. DOM Elements ---
+        const uiPrice = document.getElementById('ui-price');
+        const uiTotalAsset = document.getElementById('ui-totalAsset');
+        const uiCash = document.getElementById('ui-cash');
+        const uiShares = document.getElementById('ui-shares');
+        const uiRoi = document.getElementById('ui-roi');
+        const slider = document.getElementById('trade-slider');
+        const sliderVal = document.getElementById('ui-slider-val');
+        const estBuy = document.getElementById('est-buy');
+        const estSell = document.getElementById('est-sell');
+        const logBox = document.getElementById('trade-log');
+        const parseDebug = document.getElementById('parse-debug');
 
-    // 캔들스틱 (한국식 컬러: 상승 빨강, 하락 파랑)
-    const candleSeries = chart.addCandlestickSeries({
-        upColor: '#e74c3c', downColor: '#3498db', borderVisible: false,
-        wickUpColor: '#e74c3c', wickDownColor: '#3498db'
-    });
+        // --- 3. TradingView Chart Setup ---
+        // ✅ FIX 1: 차트 초기화를 window.onload 이후로 지연하여
+        //           flexbox 레이아웃이 완성된 뒤 크기를 읽음
+        let chart, candleSeries, smaSeries, bbUpperSeries, bbLowerSeries;
 
-    // 지표 라인 시리즈
-    const smaSeries = chart.addLineSeries({ color: '#f1c40f', lineWidth: 2, title: 'SMA 20' });
-    const bbUpperSeries = chart.addLineSeries({ color: '#9b59b6', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, title: 'BB Upper' });
-    const bbLowerSeries = chart.addLineSeries({ color: '#9b59b6', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, title: 'BB Lower' });
+        function initChart() {
+            const chartDiv = document.getElementById('chart');
 
-    window.addEventListener('resize', () => {
-        chart.applyOptions({ width: document.getElementById('chart').clientWidth, height: document.getElementById('chart').clientHeight });
-    });
+            chart = LightweightCharts.createChart(chartDiv, {
+                // autoSize: true 로 컨테이너 크기를 자동으로 따라감 (v4.1+ 지원)
+                autoSize: true,
+                layout: { textColor: '#d1d4dc', background: { type: 'solid', color: '#1e1e1e' } },
+                grid: { vertLines: { color: '#333' }, horzLines: { color: '#333' } },
+                crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+                timeScale: { timeVisible: true, borderColor: '#333' },
+                rightPriceScale: { borderColor: '#333' }
+            });
 
-    // --- 4. CSV Upload & Parse ---
-    document.getElementById('csv-upload').addEventListener('change', function(e) {
-        let file = e.target.files[0];
-        if(!file) return;
-        
-        document.getElementById('file-name').innerText = `로드된 파일: ${file.name}`;
-        
-        Papa.parse(file, {
-            header: true,
-            dynamicTyping: true,
-            skipEmptyLines: true,
-            complete: function(results) {
-                let parsed = [];
-                for(let row of results.data) {
-                    let dateStr = row.Date || row.Datetime || row.time;
-                    if(!dateStr) continue;
-                    
-                    try {
-                        let timeStr = new Date(dateStr).toISOString().split('T')[0];
-                        parsed.push({
-                            time: timeStr,
-                            open: row.Open,
-                            high: row.High,
-                            low: row.Low,
-                            close: row.Close
-                        });
-                    } catch(err) { continue; }
+            // v4 API: addCandlestickSeries / addLineSeries
+            candleSeries = chart.addCandlestickSeries({
+                upColor: '#e74c3c', downColor: '#3498db', borderVisible: false,
+                wickUpColor: '#e74c3c', wickDownColor: '#3498db'
+            });
+            smaSeries = chart.addLineSeries({ color: '#f1c40f', lineWidth: 2, title: 'SMA 20' });
+            bbUpperSeries = chart.addLineSeries({ color: '#9b59b6', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, title: 'BB Upper' });
+            bbLowerSeries = chart.addLineSeries({ color: '#9b59b6', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, title: 'BB Lower' });
+        }
+
+        // ✅ FIX 3: CSS로 min-height:500px 고정 후 DOMContentLoaded에서 바로 호출
+        document.addEventListener('DOMContentLoaded', initChart);
+
+        // --- 4. CSV Upload & Parse ---
+        document.getElementById('csv-upload').addEventListener('change', function (e) {
+            let file = e.target.files[0];
+            if (!file) return;
+            e.target.value = '';
+            document.getElementById('file-name').innerText = `로드된 파일: ${file.name}`;
+            parseDebug.innerText = '';
+
+            Papa.parse(file, {
+                header: true,
+                dynamicTyping: true,
+                skipEmptyLines: true,
+                complete: function (results) {
+                    // ✅ FIX 4: 컬럼 이름 디버깅 - 어떤 헤더가 파싱됐는지 표시
+                    const headers = results.meta.fields || [];
+                    parseDebug.innerText = `감지된 컬럼: [${headers.join(', ')}]`;
+
+                    let parsed = [];
+                    let skipped = 0;
+
+                    for (let row of results.data) {
+                        // ✅ FIX 5: 다양한 날짜 컬럼명 지원 (대소문자 무관)
+                        let dateStr = row.Date ?? row.date ?? row.Datetime ?? row.datetime ?? row.Time ?? row.time ?? row.timestamp;
+                        if (!dateStr) { skipped++; continue; }
+
+                        // ✅ FIX 6: OHLCV 값도 다양한 컬럼명 지원
+                        let open = parseFloat(row.Open ?? row.open ?? row.O ?? 0);
+                        let high = parseFloat(row.High ?? row.high ?? row.H ?? 0);
+                        let low = parseFloat(row.Low ?? row.low ?? row.L ?? 0);
+                        let close = parseFloat(row.Close ?? row.close ?? row.C ?? 0);
+
+                        if (!open || !high || !low || !close) { skipped++; continue; }
+
+                        // ✅ FIX 7: new Date()의 타임존 보정 버그 방지
+                        //           "2024-01-15" → 직접 슬라이싱, Date 객체 생성 안 함
+                        let timeStr;
+                        let ds = String(dateStr).trim();
+
+                        // YYYY-MM-DD 또는 YYYY/MM/DD 형식이면 바로 사용
+                        if (/^\d{4}[-/]\d{2}[-/]\d{2}/.test(ds)) {
+                            timeStr = ds.slice(0, 10).replace(/\//g, '-');
+                        } else {
+                            // 그 외 형식은 Date 파싱 시도 (UTC 기준으로 강제)
+                            try {
+                                let d = new Date(ds);
+                                if (isNaN(d.getTime())) { skipped++; continue; }
+                                timeStr = d.toISOString().split('T')[0];
+                            } catch { skipped++; continue; }
+                        }
+
+                        parsed.push({ time: timeStr, open, high, low, close });
+                    }
+
+                    // ✅ FIX 8: 중복 날짜 제거 (같은 날짜가 여러 행이면 마지막 것만 유지)
+                    const seen = new Map();
+                    for (let d of parsed) seen.set(d.time, d);
+                    parsed = Array.from(seen.values());
+
+                    // 날짜 오름차순 정렬
+                    parsed.sort((a, b) => a.time.localeCompare(b.time));
+
+                    if (parsed.length === 0) {
+                        parseDebug.innerText += ` | ❌ 파싱된 데이터 없음! (건너뜀: ${skipped}행) 컬럼 이름을 확인하세요.`;
+                        return;
+                    }
+
+                    parseDebug.innerText += ` | ✅ ${parsed.length}행 파싱 완료 (건너뜀: ${skipped}행)`;
+
+                    globalData = parsed;
+                    currentIndex = Math.min(100, globalData.length - 1);
+                    cash = INITIAL_CASH;
+                    shares = 0;
+                    timeTick = 0;
+                    logBox.innerHTML = '';
+                    addLog(`[System] CSV 파싱 완료. 총 ${globalData.length} 거래일. 시작: ${globalData[0].time}`);
+
+                    updateSimulation();
+                },
+                error: function (err) {
+                    parseDebug.innerText = `❌ 파싱 오류: ${err.message}`;
                 }
-                
-                parsed.sort((a,b) => new Date(a.time) - new Date(b.time));
-                
-                globalData = parsed;
-                // 초기에는 이평선 계산을 위해 100일치 데이터를 보여줌
-                currentIndex = Math.min(100, globalData.length - 1); 
-                
-                // 자산 리셋
-                cash = INITIAL_CASH;
-                shares = 0;
-                timeTick = 0;
-                logBox.innerHTML = "";
-                addLog(`[System] CSV 데이터 파싱 완료. 총 ${globalData.length} 거래일.`);
-                
-                updateSimulation();
-            }
+            });
         });
-    });
 
-    // --- 5. Core Logic ---
+        // --- 5. Core Logic ---
+        function updateSimulation() {
+            if (!globalData || globalData.length === 0) return;
+            // 차트가 아직 없으면 즉시 초기화 (타이밍 안전망)
+            if (!chart) initChart();
 
-    // 차트 및 지표 갱신
-    function updateSimulation() {
-        if (!globalData || globalData.length === 0) return;
-        
-        let visibleData = globalData.slice(0, currentIndex + 1);
-        currentPrice = visibleData[visibleData.length - 1].close;
-        
-        // 1. 캔들스틱 갱신
-        candleSeries.setData(visibleData);
-        
-        // 2. 지표 갱신 (technicalindicators 라이브러리 활용)
-        let closePrices = visibleData.map(d => d.close);
-        
-        if (closePrices.length >= 20) {
-            // SMA 20
-            let smaResult = window.sma({period: 20, values: closePrices});
-            let smaData = smaResult.map((val, idx) => ({
-                time: visibleData[idx + 19].time,
-                value: val
-            }));
-            smaSeries.setData(smaData);
-            
-            // Bollinger Bands 20, 2
-            let bbResult = window.bollingerbands({period: 20, stdDev: 2, values: closePrices});
-            let bbUpperData = bbResult.map((val, idx) => ({ time: visibleData[idx + 19].time, value: val.upper }));
-            let bbLowerData = bbResult.map((val, idx) => ({ time: visibleData[idx + 19].time, value: val.lower }));
-            
-            bbUpperSeries.setData(bbUpperData);
-            bbLowerSeries.setData(bbLowerData);
+            let visibleData = globalData.slice(0, currentIndex + 1);
+            currentPrice = visibleData[visibleData.length - 1].close;
+
+            candleSeries.setData(visibleData);
+
+            let closePrices = visibleData.map(d => d.close);
+
+            if (closePrices.length >= 20) {
+                try {
+                    let smaResult = SMA.calculate({ period: 20, values: closePrices });
+                    let smaData = smaResult.map((val, idx) => ({
+                        time: visibleData[idx + 19].time,
+                        value: val
+                    }));
+                    smaSeries.setData(smaData);
+
+                    let bbResult = BollingerBands.calculate({ period: 20, stdDev: 2, values: closePrices });
+                    let bbUpperData = bbResult.map((val, idx) => ({ time: visibleData[idx + 19].time, value: val.upper }));
+                    let bbLowerData = bbResult.map((val, idx) => ({ time: visibleData[idx + 19].time, value: val.lower }));
+                    bbUpperSeries.setData(bbUpperData);
+                    bbLowerSeries.setData(bbLowerData);
+                } catch (e) {
+                    console.error("지표 계산 에러:", e);
+                }
+            }
+
+            chart.timeScale().scrollToRealTime();
+            updateUI();
         }
 
-        // 최신 데이터가 보이도록 자동 스크롤
-        chart.timeScale().scrollToRealTime();
-        updateUI();
-    }
+        function updateUI() {
+            let totalAsset = cash + (shares * currentPrice);
+            let roi = ((totalAsset - INITIAL_CASH) / INITIAL_CASH) * 100;
 
-    // UI 업데이트
-    function updateUI() {
-        let totalAsset = cash + (shares * currentPrice);
-        let roi = ((totalAsset - INITIAL_CASH) / INITIAL_CASH) * 100;
+            uiPrice.innerText = `₩ ${Math.round(currentPrice).toLocaleString()}`;
+            uiTotalAsset.innerText = `₩ ${Math.floor(totalAsset).toLocaleString()}`;
+            uiCash.innerText = `₩ ${Math.floor(cash).toLocaleString()}`;
+            uiShares.innerText = `${shares.toLocaleString()} 주`;
+            uiRoi.innerText = `${roi > 0 ? '+' : ''}${roi.toFixed(2)}%`;
+            uiRoi.style.color = roi > 0 ? '#4CAF50' : (roi < 0 ? '#3498db' : '#e0e0e0');
 
-        uiPrice.innerText = `₩ ${Math.round(currentPrice).toLocaleString()}`;
-        uiTotalAsset.innerText = `₩ ${Math.floor(totalAsset).toLocaleString()}`;
-        uiCash.innerText = `₩ ${Math.floor(cash).toLocaleString()}`;
-        uiShares.innerText = `${shares.toLocaleString()} 주`;
-        
-        uiRoi.innerText = `${roi > 0 ? '+' : ''}${roi.toFixed(2)}%`;
-        uiRoi.style.color = roi > 0 ? '#4CAF50' : (roi < 0 ? '#3498db' : '#e0e0e0');
-        
-        updateEstimations();
-    }
-
-    // 다음 턴 진행 (무작위 10~30일 건너뛰기)
-    function nextTurn() {
-        if (!globalData || globalData.length === 0) {
-            alert("먼저 상단의 [데이터 불러오기]를 통해 CSV 파일을 업로드해주세요!");
-            return;
+            updateEstimations();
         }
-        
-        let step = Math.floor(Math.random() * 21) + 10; // 10 ~ 30 사이의 난수
-        let oldIndex = currentIndex;
-        currentIndex += step;
-        
-        if (currentIndex >= globalData.length) {
-            currentIndex = globalData.length - 1;
-            alert("데이터의 끝에 도달했습니다!");
+
+        function nextTurn() {
+            if (!globalData || globalData.length === 0) {
+                alert("먼저 상단의 [데이터 불러오기]를 통해 CSV 파일을 업로드해주세요!");
+                return;
+            }
+
+            let step = Math.floor(Math.random() * 21) + 10;
+            let oldIndex = currentIndex;
+            currentIndex = Math.min(currentIndex + step, globalData.length - 1);
+
+            if (currentIndex === globalData.length - 1 && oldIndex !== currentIndex) {
+                alert("데이터의 끝에 도달했습니다!");
+            }
+
+            timeTick += (currentIndex - oldIndex);
+            updateSimulation();
+
+            let newPrice = globalData[currentIndex].close;
+            let oldPrice = globalData[oldIndex].close;
+            let diff = newPrice - oldPrice;
+            addLog(`[⏱️ ${currentIndex - oldIndex}일 경과] ${globalData[currentIndex].time} / 주가 ${diff >= 0 ? '+' : ''}₩${Math.round(diff).toLocaleString()}`);
+
+            slider.value = 0;
+            sliderVal.innerText = `0%`;
+            updateUI();
         }
-        
-        timeTick += (currentIndex - oldIndex);
-        updateSimulation();
-        
-        let newPrice = globalData[currentIndex].close;
-        let oldPrice = globalData[oldIndex].close;
-        let diff = newPrice - oldPrice;
-        let diffSign = diff > 0 ? '+' : '';
-        addLog(`[⏱️ ${currentIndex - oldIndex}일 경과] 현재 날짜: ${globalData[currentIndex].time} / 주가 변동: ${diffSign}₩${Math.round(diff).toLocaleString()}`);
-        
-        // 매 턴 슬라이더 초기화
-        slider.value = 0;
-        sliderVal.innerText = `0%`;
-        updateUI();
-    }
 
-    // 슬라이더 이벤트
-    slider.addEventListener('input', (e) => {
-        sliderVal.innerText = `${e.target.value}%`;
-        updateEstimations();
-    });
+        slider.addEventListener('input', (e) => {
+            sliderVal.innerText = `${e.target.value}%`;
+            updateEstimations();
+        });
 
-    // 예상 수량 계산
-    function updateEstimations() {
-        if (currentPrice === 0) return;
-        let percent = parseInt(slider.value) / 100;
-        let maxBuyable = Math.floor(cash / currentPrice);
-        let maxSellable = shares;
-        
-        estBuy.innerText = Math.floor(maxBuyable * percent).toLocaleString();
-        estSell.innerText = Math.floor(maxSellable * percent).toLocaleString();
-    }
-
-    // 거래 실행
-    function executeTrade(type) {
-        if (currentPrice === 0) return alert("데이터를 먼저 로드해주세요.");
-        
-        let percent = parseInt(slider.value) / 100;
-        if (percent === 0) return;
-
-        let amount = 0;
-        if (type === 'BUY') {
-            let maxBuyable = Math.floor(cash / currentPrice);
-            amount = Math.floor(maxBuyable * percent);
-            if (amount <= 0) return;
-            
-            let cost = amount * currentPrice;
-            cash -= cost;
-            shares += amount;
-            addLog(`[매수] ${amount}주 @ ₩${Math.round(currentPrice).toLocaleString()} (총 ₩${Math.floor(cost).toLocaleString()} 지출)`);
-        } else if (type === 'SELL') {
-            amount = Math.floor(shares * percent);
-            if (amount <= 0) return;
-            
-            let revenue = amount * currentPrice;
-            cash += revenue;
-            shares -= amount;
-            addLog(`[매도] ${amount}주 @ ₩${Math.round(currentPrice).toLocaleString()} (총 ₩${Math.floor(revenue).toLocaleString()} 확보)`);
+        function updateEstimations() {
+            if (currentPrice === 0) return;
+            let percent = parseInt(slider.value) / 100;
+            estBuy.innerText = Math.floor((cash / currentPrice) * percent).toLocaleString();
+            estSell.innerText = Math.floor(shares * percent).toLocaleString();
         }
-        
-        slider.value = 0;
-        sliderVal.innerText = `0%`;
-        updateUI();
-    }
 
-    // 로그 추가
-    function addLog(msg) {
-        logBox.innerHTML = `<div><span style="color:#888;">[Day ${timeTick}]</span> ${msg}</div>` + logBox.innerHTML;
-    }
+        function executeTrade(type) {
+            if (currentPrice === 0) return alert("데이터를 먼저 로드해주세요.");
+            let percent = parseInt(slider.value) / 100;
+            if (percent === 0) return;
 
-</script>
+            if (type === 'BUY') {
+                let amount = Math.floor((cash / currentPrice) * percent);
+                if (amount <= 0) return;
+                let cost = amount * currentPrice;
+                cash -= cost;
+                shares += amount;
+                addLog(`[매수] ${amount}주 @ ₩${Math.round(currentPrice).toLocaleString()} (₩${Math.floor(cost).toLocaleString()} 지출)`);
+            } else {
+                let amount = Math.floor(shares * percent);
+                if (amount <= 0) return;
+                let revenue = amount * currentPrice;
+                cash += revenue;
+                shares -= amount;
+                addLog(`[매도] ${amount}주 @ ₩${Math.round(currentPrice).toLocaleString()} (₩${Math.floor(revenue).toLocaleString()} 확보)`);
+            }
+
+            slider.value = 0;
+            sliderVal.innerText = `0%`;
+            updateUI();
+        }
+
+        function addLog(msg) {
+            logBox.innerHTML = `<div><span style="color:#888;">[Day ${timeTick}]</span> ${msg}</div>` + logBox.innerHTML;
+        }
+    </script>
 </body>
+
 </html>
