@@ -56,8 +56,27 @@ def check_law_changes(days_back: int = 7):
 
     print(f"[전체 모니터링] '{QUERY}' 개정 이력 조회 중... ({start_date} ~ {end_date} 사이 공포/시행 기준)")
     
-    res = session.get(SEARCH_URL, params=params, headers=HEADERS, timeout=10, verify=False)
-    res.raise_for_status()
+    import requests
+    from requests.exceptions import ConnectTimeout, ReadTimeout, ConnectionError, RequestException
+
+    try:
+        res = session.get(
+            SEARCH_URL,
+            params=params,
+            headers=HEADERS,
+            timeout=(30, 60),  # connect timeout 30초, read timeout 60초
+            verify=False,
+        )
+        res.raise_for_status()
+
+    except (ConnectTimeout, ReadTimeout, ConnectionError) as e:
+        print(f"[경고] 법령 API 연결 실패 또는 타임아웃: {e}")
+        print("[경고] 이번 실행에서는 변경 없음으로 처리하고 종료합니다.")
+        return False, []
+
+    except RequestException as e:
+        print(f"[오류] 법령 API 요청 실패: {e}")
+        return False, []
 
     # XML 파싱
     xml_text = res.content.decode('utf-8', errors='replace')

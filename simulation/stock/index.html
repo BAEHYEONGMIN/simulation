@@ -33,6 +33,7 @@
             display: flex;
             flex-direction: column;
             box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+            min-width: 0; /* ✅ 무한 가로 팽창 버그 해결의 핵심 (Flex child) */
         }
 
         #chart {
@@ -52,6 +53,7 @@
             min-width: 350px;
             overflow-y: auto;
             padding-right: 10px;
+            min-width: 0; /* 패널 영역도 무한 팽창 방지 */
         }
 
         .panel {
@@ -182,6 +184,27 @@
             border-bottom: 1px solid #333;
             padding-bottom: 2px;
         }
+
+        /* ✅ 모바일 반응형 레이아웃 추가 */
+        @media (max-width: 800px) {
+            body {
+                flex-direction: column;
+                height: auto;
+                padding: 10px;
+            }
+            .chart-container {
+                min-height: 400px;
+                padding: 10px;
+            }
+            #chart {
+                min-height: 350px;
+            }
+            .panel-container {
+                min-width: 100%;
+                overflow-y: visible;
+                padding-right: 0;
+            }
+        }
     </style>
 </head>
 
@@ -190,7 +213,12 @@
     <div class="chart-container">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 10px;">
             <h2 style="margin:0;">📈 Market Chart (Pro)</h2>
-            <div style="font-size:12px; color:#888;">지표: 캔들스틱, 20일 이동평균선(노랑), 볼린저 밴드(보라)</div>
+            <div style="display:flex; align-items:center; gap: 15px; font-size:13px; color:#888;">
+                <label style="cursor:pointer; display:flex; align-items:center; gap:5px; color:#e0e0e0; font-weight:bold; background:#333; padding:5px 10px; border-radius:4px;">
+                    <input type="checkbox" id="auto-scale-toggle" checked> ↕️ Y축 자동 맞춤
+                </label>
+                <div>지표: 캔들스틱, 20일 이동평균선(노랑), 볼린저 밴드(보라)</div>
+            </div>
         </div>
         <div id="chart"></div>
     </div>
@@ -203,7 +231,8 @@
                 <label for="csv-upload" class="upload-label">클릭하여 OHLCV CSV 파일 업로드</label>
                 <div id="file-name" style="margin-top:10px; font-size:13px; color:#aaa;">(현재 가상 데이터 실행 중)</div>
             </div>
-            <div id="parse-debug" style="font-size:11px; color:#e67e22; margin-top:5px;"></div>
+            <button id="btn-load-sample" style="width:100%; background:#f39c12; padding:10px; font-size:14px; margin-top:5px;">⭐ 삼성전자 10년치 샘플 시작하기</button>
+            <div id="parse-debug" style="font-size:11px; color:#e67e22; margin-top:10px;"></div>
         </div>
 
         <div class="panel">
@@ -279,6 +308,7 @@
         const estSell = document.getElementById('est-sell');
         const logBox = document.getElementById('trade-log');
         const parseDebug = document.getElementById('parse-debug');
+        const autoScaleToggle = document.getElementById('auto-scale-toggle');
 
         // --- 3. TradingView Chart Setup ---
         // ✅ FIX 1: 차트 초기화를 window.onload 이후로 지연하여
@@ -295,7 +325,17 @@
                 grid: { vertLines: { color: '#333' }, horzLines: { color: '#333' } },
                 crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
                 timeScale: { timeVisible: true, borderColor: '#333' },
-                rightPriceScale: { borderColor: '#333' }
+                rightPriceScale: { 
+                    borderColor: '#333',
+                    autoScale: true // 초기값
+                }
+            });
+
+            // Y축 자동 맞춤 토글 이벤트
+            autoScaleToggle.addEventListener('change', (e) => {
+                chart.priceScale('right').applyOptions({
+                    autoScale: e.target.checked
+                });
             });
 
             // v4 API: addCandlestickSeries / addLineSeries
@@ -312,14 +352,12 @@
         document.addEventListener('DOMContentLoaded', initChart);
 
         // --- 4. CSV Upload & Parse ---
-        document.getElementById('csv-upload').addEventListener('change', function (e) {
-            let file = e.target.files[0];
-            if (!file) return;
-            e.target.value = '';
-            document.getElementById('file-name').innerText = `로드된 파일: ${file.name}`;
+        
+        function processCSVData(csvInput, fileName) {
             parseDebug.innerText = '';
+            document.getElementById('file-name').innerText = `로드된 파일: ${fileName}`;
 
-            Papa.parse(file, {
+            Papa.parse(csvInput, {
                 header: true,
                 dynamicTyping: true,
                 skipEmptyLines: true,
@@ -387,16 +425,40 @@
                     logBox.innerHTML = '';
                     addLog(`[System] CSV 파싱 완료. 총 ${globalData.length} 거래일. 시작: ${globalData[0].time}`);
 
-                    updateSimulation();
+                    updateSimulation(true); // 초기 로드
                 },
                 error: function (err) {
                     parseDebug.innerText = `❌ 파싱 오류: ${err.message}`;
                 }
             });
+        }
+
+        // 파일 업로드 이벤트
+        document.getElementById('csv-upload').addEventListener('change', function (e) {
+            let file = e.target.files[0];
+            if (!file) return;
+            e.target.value = ''; // 동일 파일 반복 업로드 허용
+            processCSVData(file, file.name);
+        });
+
+        // 샘플 데이터 로드 이벤트
+        document.getElementById('btn-load-sample').addEventListener('click', function() {
+            parseDebug.innerText = '샘플 데이터 다운로드 중...';
+            fetch('005930_KS_OHLCV.csv')
+                .then(res => {
+                    if (!res.ok) throw new Error('샘플 파일을 찾을 수 없습니다.');
+                    return res.text();
+                })
+                .then(text => {
+                    processCSVData(text, '삼성전자_10년_샘플.csv');
+                })
+                .catch(err => {
+                    parseDebug.innerText = `❌ ${err.message}`;
+                });
         });
 
         // --- 5. Core Logic ---
-        function updateSimulation() {
+        function updateSimulation(isInit = false, oldIndex = 0) {
             if (!globalData || globalData.length === 0) return;
             // 차트가 아직 없으면 즉시 초기화 (타이밍 안전망)
             if (!chart) initChart();
@@ -404,7 +466,14 @@
             let visibleData = globalData.slice(0, currentIndex + 1);
             currentPrice = visibleData[visibleData.length - 1].close;
 
-            candleSeries.setData(visibleData);
+            // 캔들 갱신: 전체 덮어쓰기(setData) 대신 추가된 항목만(update) 반영하여 요동 방지
+            if (isInit) {
+                candleSeries.setData(visibleData);
+            } else {
+                for (let i = oldIndex + 1; i <= currentIndex; i++) {
+                    candleSeries.update(globalData[i]);
+                }
+            }
 
             let closePrices = visibleData.map(d => d.close);
 
@@ -460,7 +529,7 @@
             }
 
             timeTick += (currentIndex - oldIndex);
-            updateSimulation();
+            updateSimulation(false, oldIndex); // 부분 업데이트
 
             let newPrice = globalData[currentIndex].close;
             let oldPrice = globalData[oldIndex].close;
