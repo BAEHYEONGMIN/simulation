@@ -27,6 +27,11 @@ jobs:
         working-directory: ./crewai_briefing
         run: pip install -r requirements.txt
 
+      - name: 실행 코드 확인
+        run: |
+          git rev-parse HEAD
+          grep -n "RECEIVERS" crewai_briefing/notify.py
+
       - name: 모닝 브리핑 실행
         working-directory: ./crewai_briefing
         run: python main.py
